@@ -425,6 +425,14 @@ class QosTxop : public Txop
 
     void DoDispose() override;
     void CreateQueue(AcIndex aci) override;
+    void GenerateBackoff(uint8_t linkId) override;
+
+    /**
+     * UHR-specific backoff path for AC_VO. Behavior matches EDCA but prints PEDCA labels.
+     *
+     * @param linkId the ID of the given link
+     */
+    void GenerateUhrVoBackoff(uint8_t linkId);
 
     /**
      * Get a reference to the link associated with the given ID.

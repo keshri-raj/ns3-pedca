@@ -281,6 +281,34 @@ QosTxop::GetAifsn(uint8_t linkId) const
     return GetLink(linkId).muAifsn;
 }
 
+void
+QosTxop::GenerateBackoff(uint8_t linkId)
+{
+    const auto phy = m_mac ? m_mac->GetWifiPhy(linkId) : nullptr;
+    const bool isUhrVo = (m_ac == AC_VO && phy &&
+                          phy->GetStandard() == WifiStandard::WIFI_STANDARD_80211uhr);
+    if (isUhrVo)
+    {
+        GenerateUhrVoBackoff(linkId);
+        return;
+    }
+    Txop::GenerateBackoff(linkId);
+}
+
+void
+QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
+{
+    // UHR AC_VO: same EDCA flow, but with PEDCA print label.
+    const auto cw = GetCw(linkId);
+    const auto backoff = m_rng->GetInteger(0, cw);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO][CW] link=" << +linkId
+                                                << " cw=" << cw);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO][Backoff] link=" << +linkId
+                                                << " slots=" << backoff);
+    m_backoffTrace(backoff, linkId);
+    StartBackoffNow(backoff, linkId);
+}
+
 Ptr<BlockAckManager>
 QosTxop::GetBaManager()
 {
