@@ -1045,6 +1045,10 @@ const std::unordered_map<std::string, WifiStandard> WIFI_STANDARDS_NAME_MAP{
     {"802.11be", WIFI_STANDARD_80211be},
     {"11be",     WIFI_STANDARD_80211be},
     {"EHT",      WIFI_STANDARD_80211be},
+    {"UHR",      WIFI_STANDARD_80211uhr},
+    {"uhr",      WIFI_STANDARD_80211uhr},
+    {"802.11uhr",WIFI_STANDARD_80211uhr},
+    {"11uhr",    WIFI_STANDARD_80211uhr},
     // clang-format on
 };
 } // namespace

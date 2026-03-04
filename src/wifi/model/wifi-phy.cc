@@ -1047,6 +1047,7 @@ WifiPhy::ConfigureStandard(WifiStandard standard)
         Configure80211ax();
         break;
     case WIFI_STANDARD_80211be:
+    case WIFI_STANDARD_80211uhr:
         Configure80211be();
         break;
     case WIFI_STANDARD_UNSPECIFIED:
@@ -2403,6 +2404,7 @@ WifiPhy::GetSubcarrierSpacing() const
         break;
     case WIFI_STANDARD_80211ax:
     case WIFI_STANDARD_80211be:
+    case WIFI_STANDARD_80211uhr:
         subcarrierSpacing = SUBCARRIER_FREQUENCY_SPACING_HE;
         break;
     default:
