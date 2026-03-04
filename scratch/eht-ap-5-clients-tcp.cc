@@ -2,9 +2,12 @@
 #include "ns3/core-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
+#include "ns3/netanim-module.h"
 #include "ns3/network-module.h"
 #include "ns3/spectrum-module.h"
 #include "ns3/wifi-module.h"
+
+#include <memory>
 
 using namespace ns3;
 
@@ -19,6 +22,10 @@ main(int argc, char* argv[])
     uint32_t payloadSize = 1448; // Typical MSS-sized payload
     uint8_t ehtMcs = 7;
     uint16_t channelWidth = 80;
+    bool enablePcap = true;
+    bool enableAnim = true;
+    std::string pcapPrefix = "scratch/eht-ap-5-clients-tcp";
+    std::string animFile = "scratch/eht-ap-5-clients-tcp.xml";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("nStas", "Number of EHT clients", nStas);
@@ -27,6 +34,10 @@ main(int argc, char* argv[])
     cmd.AddValue("payloadSize", "TCP payload size in bytes", payloadSize);
     cmd.AddValue("ehtMcs", "EHT MCS index", ehtMcs);
     cmd.AddValue("channelWidth", "Channel width in MHz", channelWidth);
+    cmd.AddValue("enablePcap", "Enable pcap output", enablePcap);
+    cmd.AddValue("enableAnim", "Enable NetAnim XML output", enableAnim);
+    cmd.AddValue("pcapPrefix", "PCAP prefix/path", pcapPrefix);
+    cmd.AddValue("animFile", "NetAnim XML file path", animFile);
     cmd.Parse(argc, argv);
 
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(payloadSize));
@@ -51,6 +62,7 @@ main(int argc, char* argv[])
     const std::string channelSettings =
         "{0, " + std::to_string(channelWidth) + ", BAND_5GHZ, 0}";
     phy.Set(0, "ChannelSettings", StringValue(channelSettings));
+    phy.SetPcapDataLinkType(WifiPhyHelper::DLT_IEEE802_11_RADIO);
     auto spectrumChannel = CreateObject<MultiModelSpectrumChannel>();
     spectrumChannel->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
     phy.AddChannel(spectrumChannel, WIFI_SPECTRUM_5_GHZ);
@@ -63,6 +75,12 @@ main(int argc, char* argv[])
 
     mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
     NetDeviceContainer apDevice = wifi.Install(phy, mac, apNode);
+
+    if (enablePcap)
+    {
+        phy.EnablePcap(pcapPrefix + "-ap", apDevice.Get(0));
+        phy.EnablePcap(pcapPrefix + "-sta", staDevices);
+    }
 
     MobilityHelper mobility;
     Ptr<ListPositionAllocator> pos = CreateObject<ListPositionAllocator>();
@@ -108,6 +126,12 @@ main(int argc, char* argv[])
         sourceApps.Add(src);
     }
 
+    std::unique_ptr<AnimationInterface> anim;
+    if (enableAnim)
+    {
+        anim = std::make_unique<AnimationInterface>(animFile);
+    }
+
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
@@ -131,4 +155,3 @@ main(int argc, char* argv[])
     Simulator::Destroy();
     return 0;
 }
-
