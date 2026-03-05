@@ -403,6 +403,14 @@ class QosTxop : public Txop
      */
     uint8_t GetAifsn(uint8_t linkId) const override;
 
+    /**
+     * Get the P-EDCA short retry counter (PSRC) for the given link.
+     *
+     * @param linkId the ID of the given link
+     * @return the PSRC value for the given link
+     */
+    uint32_t GetPsrcCount(uint8_t linkId) const;
+
   protected:
     /**
      * Structure holding information specific to a single link. Here, the meaning of
@@ -416,6 +424,7 @@ class QosTxop : public Txop
 
         std::optional<Time> startTxop; //!< the start TXOP time
         Time txopDuration{0};          //!< the duration of a TXOP
+        uint32_t psrc{0};              //!< P-EDCA short retry counter (PSRC)
         uint32_t muCwMin{0};           //!< the MU CW minimum
         uint32_t muCwMax{0};           //!< the MU CW maximum
         uint8_t muAifsn{0};            //!< the MU AIFSN
@@ -443,6 +452,9 @@ class QosTxop : public Txop
     QosLinkEntity& GetLink(uint8_t linkId) const;
 
   private:
+    static constexpr uint32_t QSRC_THRESHOLD = 2;
+    static constexpr uint32_t PSRC_THRESHOLD = 2;
+
     /// allow AggregationCapableTransmissionListener class access
     friend class AggregationCapableTransmissionListener;
 

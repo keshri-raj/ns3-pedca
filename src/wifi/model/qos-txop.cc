@@ -281,6 +281,12 @@ QosTxop::GetAifsn(uint8_t linkId) const
     return GetLink(linkId).muAifsn;
 }
 
+uint32_t
+QosTxop::GetPsrcCount(uint8_t linkId) const
+{
+    return GetLink(linkId).psrc;
+}
+
 void
 QosTxop::GenerateBackoff(uint8_t linkId)
 {
@@ -289,7 +295,35 @@ QosTxop::GenerateBackoff(uint8_t linkId)
                           phy->GetStandard() == WifiStandard::WIFI_STANDARD_80211uhr);
     if (isUhrVo)
     {
-        GenerateUhrVoBackoff(linkId);
+        const auto mSsrc = GetStaRetryCount(linkId);
+        const auto psrc = GetPsrcCount(linkId);
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UHR][VO] m_ssrc=" << mSsrc
+                                                    << " qsrcThreshold=" << QSRC_THRESHOLD
+                                                    << " psrc=" << psrc
+                                                    << " psrcThreshold=" << PSRC_THRESHOLD);
+        if (mSsrc >= QSRC_THRESHOLD)
+        {
+            if (psrc >= PSRC_THRESHOLD)
+            {
+                auto& link = GetLink(linkId);
+                link.staRetryCount = 0;
+                link.psrc = 0;
+                NS_LOG_UNCOND(
+                    Simulator::Now().GetSeconds()
+                    << "s [UHR][VO] psrc reached threshold; reset m_ssrc=0 psrc=0, use EDCA");
+                Txop::GenerateBackoff(linkId);
+                return;
+            }
+
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                          << "s [UHR][VO] m_ssrc > QSRC (P-EDCA selected)");
+            GenerateUhrVoBackoff(linkId);
+            return;
+        }
+
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDCA][VO] m_ssrc=" << mSsrc
+                                                    << " (normal EDCA selected)");
+        Txop::GenerateBackoff(linkId);
         return;
     }
     Txop::GenerateBackoff(linkId);
@@ -298,6 +332,10 @@ QosTxop::GenerateBackoff(uint8_t linkId)
 void
 QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
 {
+    auto& link = GetLink(linkId);
+    ++link.psrc;
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO] psrc=" << link.psrc
+                                                << " psrcThreshold=" << PSRC_THRESHOLD);
     // UHR AC_VO: same EDCA flow, but with PEDCA print label.
     const auto cw = GetCw(linkId);
     const auto backoff = m_rng->GetInteger(0, cw);
