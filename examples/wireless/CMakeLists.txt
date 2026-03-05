@@ -204,6 +204,7 @@ build_example(
   SOURCE_FILES wifi-simple-infra.cc
   LIBRARIES_TO_LINK ${libinternet}
                     ${libwifi}
+                    ${libnetanim} # <-- add this line
 )
 
 build_example(

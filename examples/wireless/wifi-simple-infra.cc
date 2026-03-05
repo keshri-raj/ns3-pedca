@@ -1,73 +1,7 @@
 /*
- * Copyright (c) 2009 The Boeing Company
- *
- * SPDX-License-Identifier: GPL-2.0-only
- *
+ * Modified Wifi Simple Infrastructure Example
+ * 4 Stations + 1 Access Point
  */
-
-// This script configures two nodes on an 802.11b physical layer, with
-// 802.11b NICs in infrastructure mode, and by default, the station sends
-// one packet of 1000 (application) bytes to the access point.  Unlike
-// the default physical layer configuration in which the path loss increases
-// (and the received signal strength decreases) as the distance between the
-// nodes increases, this example uses an artificial path loss model that
-// allows the configuration of the received signal strength (RSS) regardless
-// of other transmitter parameters (such as transmit power) or distance.
-// Therefore, changing position of the nodes has no effect.
-//
-// There are a number of command-line options available to control
-// the default behavior.  The list of available command-line options
-// can be listed with the following command:
-// ./ns3 run "wifi-simple-infra --help"
-// Additional command-line options are available via the generic attribute
-// configuration system.
-//
-// For instance, for the default configuration, the physical layer will
-// stop successfully receiving packets when rss drops to -82 dBm or below.
-// To see this effect, try running:
-//
-// ./ns3 run "wifi-simple-infra --rss=-80 --numPackets=20"
-// ./ns3 run "wifi-simple-infra --rss=-81 --numPackets=20"
-// ./ns3 run "wifi-simple-infra --rss=-82 --numPackets=20"
-//
-// The last command (and any RSS value lower than this) results in no
-// packets received.  This is due to the preamble detection model that
-// dominates the reception performance.  By default, the
-// ThresholdPreambleDetectionModel is added to all WifiPhy objects, and this
-// model prevents reception unless the incoming signal has a RSS above its
-// 'MinimumRssi' value (default of -82 dBm) and has a SNR above the
-// 'Threshold' value (default of 4).
-//
-// If we relax these values, we can instead observe that signal reception
-// due to the 802.11b error model alone is much lower.  For instance,
-// setting the MinimumRssi to -101 (around the thermal noise floor).
-// and the SNR Threshold to -10 dB, shows that the DsssErrorRateModel can
-// successfully decode at RSS values of -97 or -98 dBm.
-//
-// ./ns3 run "wifi-simple-infra --rss=-97 --numPackets=20
-// --ns3::ThresholdPreambleDetectionModel::Threshold=-10
-// --ns3::ThresholdPreambleDetectionModel::MinimumRssi=-101"
-// ./ns3 run "wifi-simple-infra --rss=-98 --numPackets=20
-// --ns3::ThresholdPreambleDetectionModel::Threshold=-10
-// --ns3::ThresholdPreambleDetectionModel::MinimumRssi=-101"
-// ./ns3 run "wifi-simple-infra --rss=-99 --numPackets=20
-// --ns3::ThresholdPreambleDetectionModel::Threshold=-10
-// --ns3::ThresholdPreambleDetectionModel::MinimumRssi=-101"
-
-//
-// Note that all ns-3 attributes (not just the ones exposed in the below
-// script) can be changed at command line; see the documentation.
-//
-// This script can also be helpful to put the Wifi layer into verbose
-// logging mode; this command will turn on all wifi logging:
-//
-// ./ns3 run "wifi-simple-infra --verbose=1"
-//
-// When you are done, you will notice two pcap trace files in your directory.
-// If you have tcpdump installed, you can try this:
-//
-// tcpdump -r wifi-simple-infra-0-0.pcap -nn -tt
-//
 
 #include "ns3/command-line.h"
 #include "ns3/config.h"
@@ -81,16 +15,12 @@
 #include "ns3/string.h"
 #include "ns3/yans-wifi-channel.h"
 #include "ns3/yans-wifi-helper.h"
+#include "ns3/netanim-module.h"
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("WifiSimpleInfra");
 
-/**
- * Function called when a packet is received.
- *
- * @param socket The receiving socket.
- */
 void
 ReceivePacket(Ptr<Socket> socket)
 {
@@ -100,14 +30,6 @@ ReceivePacket(Ptr<Socket> socket)
     }
 }
 
-/**
- * Generate traffic.
- *
- * @param socket The sending socket.
- * @param pktSize The packet size.
- * @param pktCount The packet count.
- * @param pktInterval The interval between two packets.
- */
 static void
 GenerateTraffic(Ptr<Socket> socket, uint32_t pktSize, uint32_t pktCount, Time pktInterval)
 {
@@ -133,8 +55,8 @@ main(int argc, char* argv[])
 {
     std::string phyMode{"DsssRate1Mbps"};
     dBm_u rss{-80};
-    uint32_t packetSize{1000}; // bytes
-    uint32_t numPackets{1};
+    uint32_t packetSize{1000};
+    uint32_t numPackets{5};
     Time interval{"1s"};
     bool verbose{false};
 
@@ -147,85 +69,79 @@ main(int argc, char* argv[])
     cmd.AddValue("verbose", "turn on all WifiNetDevice log components", verbose);
     cmd.Parse(argc, argv);
 
-    // Fix non-unicast data rate to be the same as that of unicast
     Config::SetDefault("ns3::WifiRemoteStationManager::NonUnicastMode", StringValue(phyMode));
 
-    NodeContainer c;
-    c.Create(2);
+    NodeContainer staNodes;
+    staNodes.Create(4);
+    NodeContainer apNode;
+    apNode.Create(1);
+    NodeContainer allNodes = NodeContainer(staNodes, apNode);
 
-    // The below set of helpers will help us to put together the wifi NICs we want
     WifiHelper wifi;
     if (verbose)
     {
-        WifiHelper::EnableLogComponents(); // Turn on all Wifi logging
+        WifiHelper::EnableLogComponents();
     }
     wifi.SetStandard(WIFI_STANDARD_80211b);
 
     YansWifiPhyHelper wifiPhy;
-    // This is one parameter that matters when using FixedRssLossModel
-    // set it to zero; otherwise, gain will be added
     wifiPhy.Set("RxGain", DoubleValue(0));
-    // ns-3 supports RadioTap and Prism tracing extensions for 802.11b
     wifiPhy.SetPcapDataLinkType(WifiPhyHelper::DLT_IEEE802_11_RADIO);
 
     YansWifiChannelHelper wifiChannel;
     wifiChannel.SetPropagationDelay("ns3::ConstantSpeedPropagationDelayModel");
-    // The below FixedRssLossModel will cause the rss to be fixed regardless
-    // of the distance between the two stations, and the transmit power
     wifiChannel.AddPropagationLoss("ns3::FixedRssLossModel", "Rss", DoubleValue(rss));
     wifiPhy.SetChannel(wifiChannel.Create());
 
-    // Add a mac and disable rate control
     WifiMacHelper wifiMac;
     wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
-                                 "DataMode",
-                                 StringValue(phyMode),
-                                 "ControlMode",
-                                 StringValue(phyMode));
+                                 "DataMode", StringValue(phyMode),
+                                 "ControlMode", StringValue(phyMode));
 
-    // Setup the rest of the MAC
     Ssid ssid = Ssid("wifi-default");
-    // setup STA
-    wifiMac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
-    NetDeviceContainer staDevice = wifi.Install(wifiPhy, wifiMac, c.Get(0));
-    NetDeviceContainer devices = staDevice;
-    // setup AP
-    wifiMac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
-    NetDeviceContainer apDevice = wifi.Install(wifiPhy, wifiMac, c.Get(1));
-    devices.Add(apDevice);
 
-    // Note that with FixedRssLossModel, the positions below are not
-    // used for received signal strength.
+    wifiMac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+    NetDeviceContainer staDevices = wifi.Install(wifiPhy, wifiMac, staNodes);
+
+    wifiMac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+    NetDeviceContainer apDevice = wifi.Install(wifiPhy, wifiMac, apNode);
+
+    NetDeviceContainer devices = NetDeviceContainer(staDevices, apDevice);
+
     MobilityHelper mobility;
     Ptr<ListPositionAllocator> positionAlloc = CreateObject<ListPositionAllocator>();
-    positionAlloc->Add(Vector(0.0, 0.0, 0.0));
-    positionAlloc->Add(Vector(5.0, 0.0, 0.0));
+    positionAlloc->Add(Vector(0.0, 0.0, 0.0));   // STA1
+    positionAlloc->Add(Vector(5.0, 0.0, 0.0));   // STA2
+    positionAlloc->Add(Vector(0.0, 5.0, 0.0));   // STA3
+    positionAlloc->Add(Vector(5.0, 5.0, 0.0));   // STA4
+    positionAlloc->Add(Vector(2.5, 2.5, 0.0));   // AP
     mobility.SetPositionAllocator(positionAlloc);
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    mobility.Install(c);
+    mobility.Install(allNodes);
 
     InternetStackHelper internet;
-    internet.Install(c);
+    internet.Install(allNodes);
 
     Ipv4AddressHelper ipv4;
     ipv4.SetBase("10.1.1.0", "255.255.255.0");
     Ipv4InterfaceContainer i = ipv4.Assign(devices);
 
     TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
-    Ptr<Socket> recvSink = Socket::CreateSocket(c.Get(0), tid);
+
+    // STA1 is receiver
+    Ptr<Socket> recvSink = Socket::CreateSocket(staNodes.Get(0), tid);
     InetSocketAddress local = InetSocketAddress(Ipv4Address::GetAny(), 80);
     recvSink->Bind(local);
     recvSink->SetRecvCallback(MakeCallback(&ReceivePacket));
 
-    Ptr<Socket> source = Socket::CreateSocket(c.Get(1), tid);
+    // AP is sender
+    Ptr<Socket> source = Socket::CreateSocket(apNode.Get(0), tid);
     InetSocketAddress remote = InetSocketAddress(Ipv4Address("255.255.255.255"), 80);
     source->SetAllowBroadcast(true);
     source->Connect(remote);
 
-    // Tracing
     wifiPhy.EnablePcap("wifi-simple-infra", devices);
 
-    // Output what we are doing
     std::cout << "Testing " << numPackets << " packets sent with receiver rss " << rss << std::endl;
 
     Simulator::ScheduleWithContext(source->GetNode()->GetId(),
@@ -237,6 +153,20 @@ main(int argc, char* argv[])
                                    interval);
 
     Simulator::Stop(Seconds(30));
+
+    AnimationInterface anim("wifi.xml");
+    // Customize node appearance
+    anim.UpdateNodeSize(staNodes.Get(0), 20, 20);
+    anim.UpdateNodeColor(staNodes.Get(0), 0, 255, 0);
+    anim.UpdateNodeSize(staNodes.Get(1), 20, 20);
+    anim.UpdateNodeColor(staNodes.Get(1), 255, 0, 0);
+    anim.UpdateNodeSize(staNodes.Get(2), 20, 20);
+    anim.UpdateNodeColor(staNodes.Get(2), 0, 0, 255);
+    anim.UpdateNodeSize(staNodes.Get(3), 20, 20);
+    anim.UpdateNodeColor(staNodes.Get(3), 255, 255, 0);
+    anim.UpdateNodeSize(apNode.Get(0), 25, 25);
+    anim.UpdateNodeColor(apNode.Get(0), 255, 0, 255);
+
     Simulator::Run();
     Simulator::Destroy();
 
