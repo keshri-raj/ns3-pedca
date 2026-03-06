@@ -15,6 +15,9 @@
 #include "ns3/abort.h"
 #include "ns3/log.h"
 
+#include <fstream>
+#include <sstream>
+
 #undef NS_LOG_APPEND_CONTEXT
 #define NS_LOG_APPEND_CONTEXT WIFI_FEM_NS_LOG_APPEND_CONTEXT
 
@@ -24,6 +27,19 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("QosFrameExchangeManager");
 
 NS_OBJECT_ENSURE_REGISTERED(QosFrameExchangeManager);
+
+namespace
+{
+void
+PedcaFileLog(const std::string& line)
+{
+    static std::ofstream logFile("/tmp/ns3-pedca.log", std::ios::app);
+    if (logFile.is_open())
+    {
+        logFile << line << '\n';
+    }
+}
+} // namespace
 
 TypeId
 QosFrameExchangeManager::GetTypeId()
@@ -315,8 +331,10 @@ QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
         m_edca = nullptr;
         m_dcf = nullptr;
     });
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                  << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt");
+    std::ostringstream ctsLog;
+    ctsLog << Simulator::Now().GetSeconds()
+           << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt";
+    PedcaFileLog(ctsLog.str());
     return true;
 }
 
@@ -672,8 +690,10 @@ QosFrameExchangeManager::TransmissionSucceeded()
     if (m_edca->IsPedcaMode(m_linkId))
     {
         m_edca->ResetPedcaCounters(m_linkId);
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                      << "s [PEDCA][VO] data exchange success; reset m_ssrc=0 psrc=0");
+        std::ostringstream okLog;
+        okLog << Simulator::Now().GetSeconds()
+              << "s [PEDCA][VO] data exchange success; reset m_ssrc=0 psrc=0";
+        PedcaFileLog(okLog.str());
     }
 
     if (m_edca->GetTxopLimit(m_linkId).IsStrictlyPositive() &&
@@ -716,9 +736,11 @@ QosFrameExchangeManager::TransmissionFailed(bool forceCurrentCw)
     {
         m_edca->SetPedcaAfterCts(m_linkId, false);
         m_edca->IncrementPsrcCount(m_linkId);
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                      << "s [PEDCA][VO] data exchange failed; increment psrc="
-                      << m_edca->GetPsrcCount(m_linkId));
+        std::ostringstream failLog;
+        failLog << Simulator::Now().GetSeconds()
+                << "s [PEDCA][VO] data exchange failed; increment psrc="
+                << m_edca->GetPsrcCount(m_linkId);
+        PedcaFileLog(failLog.str());
     }
 
     if (m_initialFrame)

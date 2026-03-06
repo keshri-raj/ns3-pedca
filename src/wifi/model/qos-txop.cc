@@ -33,6 +33,9 @@
 #include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
 
+#include <fstream>
+#include <sstream>
+
 #undef NS_LOG_APPEND_CONTEXT
 #define NS_LOG_APPEND_CONTEXT WIFI_TXOP_NS_LOG_APPEND_CONTEXT
 
@@ -42,6 +45,19 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("QosTxop");
 
 NS_OBJECT_ENSURE_REGISTERED(QosTxop);
+
+namespace
+{
+void
+PedcaFileLog(const std::string& line)
+{
+    static std::ofstream logFile("/tmp/ns3-pedca.log", std::ios::app);
+    if (logFile.is_open())
+    {
+        logFile << line << '\n';
+    }
+}
+} // namespace
 
 TypeId
 QosTxop::GetTypeId()
@@ -369,18 +385,15 @@ QosTxop::GenerateBackoff(uint8_t linkId)
         auto& link = GetLink(linkId);
         const auto mSsrc = GetStaRetryCount(linkId);
         const auto psrc = GetPsrcCount(linkId);
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UHR][VO] m_ssrc=" << mSsrc
-                                                    << " qsrcThreshold=" << QSRC_THRESHOLD
-                                                    << " psrc=" << psrc
-                                                    << " psrcThreshold=" << PSRC_THRESHOLD);
         if (mSsrc >= QSRC_THRESHOLD || link.pedcaMode)
         {
             if (psrc == PSRC_THRESHOLD)
             {
                 ResetPedcaCounters(linkId);
-                NS_LOG_UNCOND(
-                    Simulator::Now().GetSeconds()
-                    << "s [UHR][VO] psrc reached threshold; reset m_ssrc=0 psrc=0, use EDCA");
+                std::ostringstream reset;
+                reset << Simulator::Now().GetSeconds()
+                      << "s [UHR][VO] psrc reached threshold; reset m_ssrc=0 psrc=0, use EDCA";
+                PedcaFileLog(reset.str());
                 Txop::GenerateBackoff(linkId);
                 return;
             }
@@ -388,22 +401,19 @@ QosTxop::GenerateBackoff(uint8_t linkId)
             link.pedcaMode = true;
             if (link.pedcaAfterCts)
             {
-                NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                              << "s [PEDCA][VO] post-CTS phase: contend with EDCA");
                 Txop::GenerateBackoff(linkId);
                 return;
             }
 
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                          << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected)");
+            std::ostringstream pedca;
+            pedca << Simulator::Now().GetSeconds() << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected)";
+            PedcaFileLog(pedca.str());
             GenerateUhrVoBackoff(linkId);
             return;
         }
 
         link.pedcaMode = false;
         link.pedcaAfterCts = false;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDCA][VO] m_ssrc=" << mSsrc
-                                                    << " (normal EDCA selected)");
         Txop::GenerateBackoff(linkId);
         return;
     }
@@ -415,15 +425,9 @@ QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
 {
     auto& link = GetLink(linkId);
     link.pedcaCtsPending = true;
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO] psrc=" << link.psrc
-                                                << " psrcThreshold=" << PSRC_THRESHOLD);
     // UHR AC_VO: same EDCA flow, but with PEDCA print label.
     const auto cw = GetCw(linkId);
     const auto backoff = m_rng->GetInteger(0, cw);
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO][CW] link=" << +linkId
-                                                << " cw=" << cw);
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO][Backoff] link=" << +linkId
-                                                << " slots=" << backoff);
     m_backoffTrace(backoff, linkId);
     StartBackoffNow(backoff, linkId);
 }
