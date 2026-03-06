@@ -411,6 +411,85 @@ class QosTxop : public Txop
      */
     uint32_t GetPsrcCount(uint8_t linkId) const;
 
+    /**
+     * Mark that, after winning channel access, this link shall send a CTS-to-self
+     * as part of the P-EDCA procedure before contending again.
+     *
+     * @param linkId the given link ID
+     */
+    void MarkPedcaCtsPending(uint8_t linkId);
+
+    /**
+     * Consume and return whether a P-EDCA CTS-to-self transmission is pending for
+     * the given link.
+     *
+     * @param linkId the given link ID
+     * @return true if a P-EDCA CTS-to-self transmission was pending
+     */
+    bool ConsumePedcaCtsPending(uint8_t linkId);
+
+    /**
+     * Mark that, on the next successful TXOP start, P-EDCA counters shall be reset.
+     *
+     * @param linkId the given link ID
+     */
+    void MarkPedcaResetOnNextTxop(uint8_t linkId);
+
+    /**
+     * Consume and return whether P-EDCA counters must be reset on TXOP start.
+     *
+     * @param linkId the given link ID
+     * @return true if reset was requested
+     */
+    bool ConsumePedcaResetOnNextTxop(uint8_t linkId);
+
+    /**
+     * Reset QSRC/PSRC counters for the given link.
+     *
+     * @param linkId the given link ID
+     */
+    void ResetPedcaCounters(uint8_t linkId);
+
+    /**
+     * Set whether this link is currently in P-EDCA mode.
+     *
+     * @param linkId the given link ID
+     * @param enabled true to enable P-EDCA mode
+     */
+    void SetPedcaMode(uint8_t linkId, bool enabled);
+
+    /**
+     * Return whether this link is currently in P-EDCA mode.
+     *
+     * @param linkId the given link ID
+     * @return true if P-EDCA mode is enabled
+     */
+    bool IsPedcaMode(uint8_t linkId) const;
+
+    /**
+     * Set whether this link is in the post-CTS phase of P-EDCA, where it should
+     * contend using normal EDCA for actual data transmission.
+     *
+     * @param linkId the given link ID
+     * @param enabled true to enable post-CTS phase
+     */
+    void SetPedcaAfterCts(uint8_t linkId, bool enabled);
+
+    /**
+     * Return whether this link is in the post-CTS phase of P-EDCA.
+     *
+     * @param linkId the given link ID
+     * @return true if post-CTS phase is enabled
+     */
+    bool IsPedcaAfterCts(uint8_t linkId) const;
+
+    /**
+     * Increment the PSRC for the given link.
+     *
+     * @param linkId the given link ID
+     */
+    void IncrementPsrcCount(uint8_t linkId);
+
   protected:
     /**
      * Structure holding information specific to a single link. Here, the meaning of
@@ -425,6 +504,10 @@ class QosTxop : public Txop
         std::optional<Time> startTxop; //!< the start TXOP time
         Time txopDuration{0};          //!< the duration of a TXOP
         uint32_t psrc{0};              //!< P-EDCA short retry counter (PSRC)
+        bool pedcaCtsPending{false};   //!< whether a P-EDCA CTS-to-self is pending
+        bool pedcaMode{false};         //!< whether P-EDCA mode is active
+        bool pedcaAfterCts{false};     //!< whether EDCA contention after CTS is in progress
+        bool pedcaResetOnNextTxop{false}; //!< reset P-EDCA counters on next TXOP start
         uint32_t muCwMin{0};           //!< the MU CW minimum
         uint32_t muCwMax{0};           //!< the MU CW maximum
         uint8_t muAifsn{0};            //!< the MU AIFSN

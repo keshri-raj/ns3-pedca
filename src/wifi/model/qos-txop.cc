@@ -288,6 +288,77 @@ QosTxop::GetPsrcCount(uint8_t linkId) const
 }
 
 void
+QosTxop::MarkPedcaCtsPending(uint8_t linkId)
+{
+    GetLink(linkId).pedcaCtsPending = true;
+}
+
+bool
+QosTxop::ConsumePedcaCtsPending(uint8_t linkId)
+{
+    auto& link = GetLink(linkId);
+    const auto pending = link.pedcaCtsPending;
+    link.pedcaCtsPending = false;
+    return pending;
+}
+
+void
+QosTxop::MarkPedcaResetOnNextTxop(uint8_t linkId)
+{
+    GetLink(linkId).pedcaResetOnNextTxop = true;
+}
+
+bool
+QosTxop::ConsumePedcaResetOnNextTxop(uint8_t linkId)
+{
+    auto& link = GetLink(linkId);
+    const auto reset = link.pedcaResetOnNextTxop;
+    link.pedcaResetOnNextTxop = false;
+    return reset;
+}
+
+void
+QosTxop::ResetPedcaCounters(uint8_t linkId)
+{
+    auto& link = GetLink(linkId);
+    link.staRetryCount = 0;
+    link.psrc = 0;
+    link.pedcaCtsPending = false;
+    link.pedcaMode = false;
+    link.pedcaAfterCts = false;
+}
+
+void
+QosTxop::SetPedcaMode(uint8_t linkId, bool enabled)
+{
+    GetLink(linkId).pedcaMode = enabled;
+}
+
+bool
+QosTxop::IsPedcaMode(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaMode;
+}
+
+void
+QosTxop::SetPedcaAfterCts(uint8_t linkId, bool enabled)
+{
+    GetLink(linkId).pedcaAfterCts = enabled;
+}
+
+bool
+QosTxop::IsPedcaAfterCts(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaAfterCts;
+}
+
+void
+QosTxop::IncrementPsrcCount(uint8_t linkId)
+{
+    ++GetLink(linkId).psrc;
+}
+
+void
 QosTxop::GenerateBackoff(uint8_t linkId)
 {
     const auto phy = m_mac ? m_mac->GetWifiPhy(linkId) : nullptr;
@@ -295,19 +366,18 @@ QosTxop::GenerateBackoff(uint8_t linkId)
                           phy->GetStandard() == WifiStandard::WIFI_STANDARD_80211uhr);
     if (isUhrVo)
     {
+        auto& link = GetLink(linkId);
         const auto mSsrc = GetStaRetryCount(linkId);
         const auto psrc = GetPsrcCount(linkId);
         NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UHR][VO] m_ssrc=" << mSsrc
                                                     << " qsrcThreshold=" << QSRC_THRESHOLD
                                                     << " psrc=" << psrc
                                                     << " psrcThreshold=" << PSRC_THRESHOLD);
-        if (mSsrc >= QSRC_THRESHOLD)
+        if (mSsrc >= QSRC_THRESHOLD || link.pedcaMode)
         {
-            if (psrc >= PSRC_THRESHOLD)
+            if (psrc == PSRC_THRESHOLD)
             {
-                auto& link = GetLink(linkId);
-                link.staRetryCount = 0;
-                link.psrc = 0;
+                ResetPedcaCounters(linkId);
                 NS_LOG_UNCOND(
                     Simulator::Now().GetSeconds()
                     << "s [UHR][VO] psrc reached threshold; reset m_ssrc=0 psrc=0, use EDCA");
@@ -315,12 +385,23 @@ QosTxop::GenerateBackoff(uint8_t linkId)
                 return;
             }
 
+            link.pedcaMode = true;
+            if (link.pedcaAfterCts)
+            {
+                NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                              << "s [PEDCA][VO] post-CTS phase: contend with EDCA");
+                Txop::GenerateBackoff(linkId);
+                return;
+            }
+
             NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                          << "s [UHR][VO] m_ssrc > QSRC (P-EDCA selected)");
+                          << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected)");
             GenerateUhrVoBackoff(linkId);
             return;
         }
 
+        link.pedcaMode = false;
+        link.pedcaAfterCts = false;
         NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDCA][VO] m_ssrc=" << mSsrc
                                                     << " (normal EDCA selected)");
         Txop::GenerateBackoff(linkId);
@@ -333,7 +414,7 @@ void
 QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
 {
     auto& link = GetLink(linkId);
-    ++link.psrc;
+    link.pedcaCtsPending = true;
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [PEDCA][VO] psrc=" << link.psrc
                                                 << " psrcThreshold=" << PSRC_THRESHOLD);
     // UHR AC_VO: same EDCA flow, but with PEDCA print label.

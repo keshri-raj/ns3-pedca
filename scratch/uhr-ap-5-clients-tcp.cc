@@ -16,7 +16,7 @@ NS_LOG_COMPONENT_DEFINE("UhrAp5ClientsTcp");
 int
 main(int argc, char* argv[])
 {
-    uint32_t nStas = 5;
+    uint32_t nStas = 10;
     double simTime = 10.0;
     double appStart = 1.0;
     uint32_t payloadSize = 1448; // Typical MSS-sized payload
@@ -56,7 +56,9 @@ main(int argc, char* argv[])
                                  "DataMode",
                                  StringValue(dataMode),
                                  "ControlMode",
-                                 StringValue(controlMode));
+                                 StringValue(controlMode),
+                                 "RtsCtsThreshold",
+                                 UintegerValue(0));
 
     SpectrumWifiPhyHelper phy(1);
     const std::string channelSettings =
@@ -120,8 +122,9 @@ main(int argc, char* argv[])
 
         BulkSendHelper sourceHelper("ns3::TcpSocketFactory", InetSocketAddress(apAddr, port));
         sourceHelper.SetAttribute("MaxBytes", UintegerValue(0)); // Unlimited until stop time
+        sourceHelper.SetAttribute("Tos", UintegerValue(0xb8));   // Map traffic to AC_VO
         auto src = sourceHelper.Install(staNodes.Get(i));
-        src.Start(Seconds(appStart + 0.02 * i));
+        src.Start(Seconds(appStart));
         src.Stop(Seconds(simTime));
         sourceApps.Add(src);
     }
@@ -146,7 +149,7 @@ main(int argc, char* argv[])
 
     const double active = std::max(0.001, simTime - appStart);
     const double throughputMbps = (totalRx * 8.0) / (active * 1e6);
-    std::cout << "UHR AP+5 Clients TCP summary\n";
+    std::cout << "UHR AP+" << nStas << " Clients TCP summary\n";
     std::cout << "  AP IP: " << apAddr << "\n";
     std::cout << "  Data mode: " << dataMode << ", channel width: " << channelWidth << " MHz\n";
     std::cout << "  Total RX bytes at AP: " << totalRx << "\n";
@@ -155,4 +158,3 @@ main(int argc, char* argv[])
     Simulator::Destroy();
     return 0;
 }
-

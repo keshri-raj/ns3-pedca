@@ -208,6 +208,12 @@ QosFrameExchangeManager::StartTransmission(Ptr<QosTxop> edca, Time txopDuration)
     m_dcf = edca;
     m_edca = edca;
 
+    // P-EDCA path: send CTS-to-self and then re-contend.
+    if (m_edca->ConsumePedcaCtsPending(m_linkId))
+    {
+        return SendPedcaCtsAndRecontend(m_edca);
+    }
+
     // We check if this EDCAF invoked the backoff procedure (without terminating
     // the TXOP) because the transmission of a non-initial frame of a TXOP failed
     bool backingOff = (m_edcaBackingOff == m_edca);
@@ -275,6 +281,43 @@ QosFrameExchangeManager::StartTransmission(Ptr<QosTxop> edca, Time txopDuration)
     NotifyChannelReleased(m_edca);
     m_edca = nullptr;
     return false;
+}
+
+bool
+QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
+{
+    NS_LOG_FUNCTION(this << edca);
+
+    // Mark TXOP start before computing CTS Duration/ID, because QoS Duration/ID logic
+    // may use remaining TXOP time when TXOP limit is non-zero.
+    edca->NotifyChannelAccessed(m_linkId, Seconds(0));
+
+    WifiMacHeader cts;
+    cts.SetType(WIFI_MAC_CTL_CTS);
+    cts.SetDsNotFrom();
+    cts.SetDsNotTo();
+    cts.SetNoMoreFragments();
+    cts.SetNoRetry();
+    cts.SetAddr1(GetAddress());
+
+    auto ctsTxVector = GetWifiRemoteStationManager()->GetCtsToSelfTxVector();
+    const auto edcaDeferWindow = m_phy->GetSlot() * edca->GetAifsn(m_linkId);
+    cts.SetDuration(GetCtsToSelfDurationId(ctsTxVector, edcaDeferWindow, Seconds(0)));
+    ForwardMpduDown(Create<WifiMpdu>(Create<Packet>(), cts), ctsTxVector);
+
+    const auto ctsDuration =
+        WifiPhy::CalculateTxDuration(GetCtsSize(), ctsTxVector, m_phy->GetPhyBand());
+    // After CTS-to-self, re-contend once using normal EDCA to attempt data transmission.
+    edca->SetPedcaAfterCts(m_linkId, true);
+
+    Simulator::Schedule(ctsDuration, [this, edca]() {
+        NotifyChannelReleased(edca);
+        m_edca = nullptr;
+        m_dcf = nullptr;
+    });
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt");
+    return true;
 }
 
 bool
@@ -626,6 +669,13 @@ QosFrameExchangeManager::TransmissionSucceeded()
         return;
     }
 
+    if (m_edca->IsPedcaMode(m_linkId))
+    {
+        m_edca->ResetPedcaCounters(m_linkId);
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [PEDCA][VO] data exchange success; reset m_ssrc=0 psrc=0");
+    }
+
     if (m_edca->GetTxopLimit(m_linkId).IsStrictlyPositive() &&
         m_edca->GetRemainingTxop(m_linkId) > m_phy->GetSifs())
     {
@@ -660,6 +710,15 @@ QosFrameExchangeManager::TransmissionFailed(bool forceCurrentCw)
     {
         FrameExchangeManager::TransmissionFailed(forceCurrentCw);
         return;
+    }
+
+    if (m_edca->IsPedcaMode(m_linkId))
+    {
+        m_edca->SetPedcaAfterCts(m_linkId, false);
+        m_edca->IncrementPsrcCount(m_linkId);
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [PEDCA][VO] data exchange failed; increment psrc="
+                      << m_edca->GetPsrcCount(m_linkId));
     }
 
     if (m_initialFrame)

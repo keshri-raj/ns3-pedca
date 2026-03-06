@@ -155,6 +155,15 @@ class QosFrameExchangeManager : public FrameExchangeManager
     virtual bool StartFrameExchange(Ptr<QosTxop> edca, Time availableTime, bool initialFrame);
 
     /**
+     * Send a CTS-to-self for the P-EDCA procedure and then release channel so the
+     * same EDCAF can re-contend.
+     *
+     * @param edca the EDCAF that gained channel access
+     * @return true if the CTS-to-self was sent
+     */
+    bool SendPedcaCtsAndRecontend(Ptr<QosTxop> edca);
+
+    /**
      * Perform a PIFS recovery as a response to transmission failure within a TXOP.
      * If the carrier sense indicates that the medium is idle, continue the TXOP.
      * Otherwise, release the channel.
