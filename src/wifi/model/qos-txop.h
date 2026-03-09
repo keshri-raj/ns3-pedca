@@ -404,6 +404,14 @@ class QosTxop : public Txop
     uint8_t GetAifsn(uint8_t linkId) const override;
 
     /**
+     * Return the EDCA AIFSN (without P-EDCA DSAIFS reduction) for the given link.
+     *
+     * @param linkId the ID of the given link
+     * @return the EDCA AIFSN configured for the link
+     */
+    uint8_t GetEdcaAifsn(uint8_t linkId) const;
+
+    /**
      * Get the P-EDCA short retry counter (PSRC) for the given link.
      *
      * @param linkId the ID of the given link
@@ -520,7 +528,8 @@ class QosTxop : public Txop
     void GenerateBackoff(uint8_t linkId) override;
 
     /**
-     * UHR-specific backoff path for AC_VO. Behavior matches EDCA but prints PEDCA labels.
+     * UHR-specific P-EDCA CTS phase for AC_VO.
+     * CTS-to-self is attempted after a reduced defer time (DSAIFS) and zero backoff.
      *
      * @param linkId the ID of the given link
      */
@@ -537,6 +546,7 @@ class QosTxop : public Txop
   private:
     static constexpr uint32_t QSRC_THRESHOLD = 2;
     static constexpr uint32_t PSRC_THRESHOLD = 2;
+    static constexpr uint8_t PEDCA_DSAIFS_REDUCTION = 1;
 
     /// allow AggregationCapableTransmissionListener class access
     friend class AggregationCapableTransmissionListener;

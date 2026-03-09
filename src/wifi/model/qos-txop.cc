@@ -290,6 +290,20 @@ QosTxop::GetMaxCw(uint8_t linkId) const
 uint8_t
 QosTxop::GetAifsn(uint8_t linkId) const
 {
+    const auto edcaAifsn = GetEdcaAifsn(linkId);
+    const auto& link = GetLink(linkId);
+
+    // During the P-EDCA CTS-to-self attempt, use DSAIFS (< AIFS of AC_VO).
+    if (link.pedcaCtsPending && !link.pedcaAfterCts && edcaAifsn > PEDCA_DSAIFS_REDUCTION)
+    {
+        return edcaAifsn - PEDCA_DSAIFS_REDUCTION;
+    }
+    return edcaAifsn;
+}
+
+uint8_t
+QosTxop::GetEdcaAifsn(uint8_t linkId) const
+{
     if (!MuEdcaTimerRunning(linkId))
     {
         return GetLink(linkId).aifsn;
@@ -406,7 +420,13 @@ QosTxop::GenerateBackoff(uint8_t linkId)
             }
 
             std::ostringstream pedca;
-            pedca << Simulator::Now().GetSeconds() << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected)";
+            const auto edcaAifsn = GetEdcaAifsn(linkId);
+            const auto dsaifsn =
+                (edcaAifsn > PEDCA_DSAIFS_REDUCTION) ? (edcaAifsn - PEDCA_DSAIFS_REDUCTION)
+                                                     : edcaAifsn;
+            pedca << Simulator::Now().GetSeconds()
+                  << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected), EDCA_AIFSN="
+                  << +edcaAifsn << ", DSAIFSN=" << +dsaifsn << ", CTS_backoff=0";
             PedcaFileLog(pedca.str());
             GenerateUhrVoBackoff(linkId);
             return;
@@ -425,9 +445,8 @@ QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
 {
     auto& link = GetLink(linkId);
     link.pedcaCtsPending = true;
-    // UHR AC_VO: same EDCA flow, but with PEDCA print label.
-    const auto cw = GetCw(linkId);
-    const auto backoff = m_rng->GetInteger(0, cw);
+    // CTS-to-self is attempted as soon as medium is idle for DSAIFS.
+    constexpr uint32_t backoff = 0;
     m_backoffTrace(backoff, linkId);
     StartBackoffNow(backoff, linkId);
 }

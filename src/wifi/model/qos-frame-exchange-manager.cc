@@ -317,7 +317,8 @@ QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
     cts.SetAddr1(GetAddress());
 
     auto ctsTxVector = GetWifiRemoteStationManager()->GetCtsToSelfTxVector();
-    const auto edcaDeferWindow = m_phy->GetSlot() * edca->GetAifsn(m_linkId);
+    // Use regular EDCA AIFS (not reduced DSAIFS) for post-CTS EDCA re-contention window.
+    const auto edcaDeferWindow = m_phy->GetSlot() * edca->GetEdcaAifsn(m_linkId);
     cts.SetDuration(GetCtsToSelfDurationId(ctsTxVector, edcaDeferWindow, Seconds(0)));
     ForwardMpduDown(Create<WifiMpdu>(Create<Packet>(), cts), ctsTxVector);
 
@@ -333,7 +334,8 @@ QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
     });
     std::ostringstream ctsLog;
     ctsLog << Simulator::Now().GetSeconds()
-           << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt";
+           << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt"
+           << " (EDCA_AIFSN=" << +edca->GetEdcaAifsn(m_linkId) << ")";
     PedcaFileLog(ctsLog.str());
     return true;
 }
