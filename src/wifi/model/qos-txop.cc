@@ -29,6 +29,7 @@
 #include "ns3/ht-configuration.h"
 #include "ns3/ht-frame-exchange-manager.h"
 #include "ns3/log.h"
+#include "ns3/node.h"
 #include "ns3/pointer.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
@@ -100,6 +101,18 @@ QosTxop::GetTypeId()
                           UintegerValue(1),
                           MakeUintegerAccessor(&QosTxop::m_nMaxInflights),
                           MakeUintegerChecker<uint8_t>(1, 15))
+            .AddAttribute("EnableUhrPedca",
+                          "Enable UHR VO P-EDCA behavior (DSAIFS + CTS-to-self path).",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&QosTxop::m_enableUhrPedca),
+                          MakeBooleanChecker())
+            .AddAttribute(
+                "DistributePedcaAcrossLinks",
+                "If enabled for multi-link STA devices, P-EDCA is only attempted on one "
+                "designated link per STA (NodeId modulo number of links) to spread contention.",
+                BooleanValue(false),
+                MakeBooleanAccessor(&QosTxop::m_distributePedcaAcrossLinks),
+                MakeBooleanChecker())
             .AddTraceSource("TxopTrace",
                             "Trace source for TXOP start and duration times",
                             MakeTraceSourceAccessor(&QosTxop::m_txopTrace),
@@ -392,10 +405,25 @@ void
 QosTxop::GenerateBackoff(uint8_t linkId)
 {
     const auto phy = m_mac ? m_mac->GetWifiPhy(linkId) : nullptr;
-    const bool isUhrVo = (m_ac == AC_VO && phy &&
+    const bool isUhrVo = (m_enableUhrPedca && m_ac == AC_VO && phy &&
                           phy->GetStandard() == WifiStandard::WIFI_STANDARD_80211uhr);
     if (isUhrVo)
     {
+        if (m_distributePedcaAcrossLinks && m_mac->GetTypeOfStation() == STA && m_mac->GetNLinks() > 1)
+        {
+            const auto node = m_mac->GetDevice()->GetNode();
+            const auto preferredLinkId = static_cast<uint8_t>(node->GetId() % m_mac->GetNLinks());
+            if (linkId != preferredLinkId)
+            {
+                auto& nonPreferred = GetLink(linkId);
+                nonPreferred.pedcaMode = false;
+                nonPreferred.pedcaAfterCts = false;
+                nonPreferred.pedcaCtsPending = false;
+                Txop::GenerateBackoff(linkId);
+                return;
+            }
+        }
+
         auto& link = GetLink(linkId);
         const auto mSsrc = GetStaRetryCount(linkId);
         const auto psrc = GetPsrcCount(linkId);

@@ -578,6 +578,8 @@ class QosTxop : public Txop
     uint8_t m_nMaxInflights;                  //!< the maximum number of links on which
                                               //!< an MPDU can be in-flight at the same
                                               //!< time
+    bool m_enableUhrPedca{true}; //!< enable UHR VO P-EDCA behavior
+    bool m_distributePedcaAcrossLinks{false}; //!< split P-EDCA attempts across links by STA
 
     /// TracedCallback for TXOP trace typedef
     typedef TracedCallback<Time /* start time */, Time /* duration */, uint8_t /* link ID*/>

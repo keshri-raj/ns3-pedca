@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace ns3;
@@ -35,6 +36,29 @@ struct Percentiles
     double p95{0.0};
     double p99{0.0};
     double p999{0.0};
+};
+
+struct VoStaStats
+{
+    std::unordered_map<uint64_t, double> enqueueTimeByUid;
+    std::map<uint8_t, double> lastBackoffStartByLink;
+    uint32_t queueDepthLast{0};
+    double queueDepthLastUpdateSec{0.0};
+    double queueDepthArea{0.0};
+    uint32_t queueDepthMax{0};
+    uint64_t queueDrops{0};
+    uint64_t queueDropBeforeEnqueue{0};
+    uint64_t queueExpiredDrops{0};
+};
+
+struct VoMacStats
+{
+    std::vector<VoStaStats> sta;
+    std::vector<double> queueDelayMs;
+    std::vector<double> accessDelayMs;
+    uint64_t macTxDataFailed{0};
+    uint64_t macTxFinalDataFailed{0};
+    uint64_t macTxRtsFailed{0};
 };
 
 double
@@ -120,6 +144,109 @@ WriteCdfCsv(const std::string& path, const std::vector<std::pair<double, double>
         out << value << "," << prob << "\n";
     }
 }
+
+void
+OnVoQueueEnqueue(VoMacStats* stats, uint32_t staIdx, Ptr<const WifiMpdu> mpdu)
+{
+    if (!mpdu || !mpdu->GetPacket())
+    {
+        return;
+    }
+    stats->sta[staIdx].enqueueTimeByUid[mpdu->GetPacket()->GetUid()] = Simulator::Now().GetSeconds();
+}
+
+void
+OnVoQueueDequeue(VoMacStats* stats, uint32_t staIdx, Ptr<const WifiMpdu> mpdu)
+{
+    if (!mpdu || !mpdu->GetPacket())
+    {
+        return;
+    }
+    auto& st = stats->sta[staIdx];
+    const auto uid = mpdu->GetPacket()->GetUid();
+    if (auto it = st.enqueueTimeByUid.find(uid); it != st.enqueueTimeByUid.end())
+    {
+        stats->queueDelayMs.push_back((Simulator::Now().GetSeconds() - it->second) * 1000.0);
+        st.enqueueTimeByUid.erase(it);
+    }
+}
+
+void
+OnVoQueueDrop(VoMacStats* stats, uint32_t staIdx, Ptr<const WifiMpdu> mpdu)
+{
+    stats->sta[staIdx].queueDrops++;
+    if (mpdu && mpdu->GetPacket())
+    {
+        stats->sta[staIdx].enqueueTimeByUid.erase(mpdu->GetPacket()->GetUid());
+    }
+}
+
+void
+OnVoQueueDropBeforeEnqueue(VoMacStats* stats, uint32_t staIdx, Ptr<const WifiMpdu> mpdu)
+{
+    stats->sta[staIdx].queueDropBeforeEnqueue++;
+    if (mpdu && mpdu->GetPacket())
+    {
+        stats->sta[staIdx].enqueueTimeByUid.erase(mpdu->GetPacket()->GetUid());
+    }
+}
+
+void
+OnVoQueueExpired(VoMacStats* stats, uint32_t staIdx, Ptr<const WifiMpdu> mpdu)
+{
+    stats->sta[staIdx].queueExpiredDrops++;
+    if (mpdu && mpdu->GetPacket())
+    {
+        stats->sta[staIdx].enqueueTimeByUid.erase(mpdu->GetPacket()->GetUid());
+    }
+}
+
+void
+OnVoQueueDepthChange(VoMacStats* stats, uint32_t staIdx, uint32_t oldVal, uint32_t newVal)
+{
+    auto& st = stats->sta[staIdx];
+    const auto nowSec = Simulator::Now().GetSeconds();
+    st.queueDepthArea += oldVal * std::max(0.0, nowSec - st.queueDepthLastUpdateSec);
+    st.queueDepthLast = newVal;
+    st.queueDepthLastUpdateSec = nowSec;
+    st.queueDepthMax = std::max(st.queueDepthMax, newVal);
+}
+
+void
+OnVoBackoff(VoMacStats* stats, uint32_t staIdx, uint32_t slots, uint8_t linkId)
+{
+    (void)slots;
+    stats->sta[staIdx].lastBackoffStartByLink[linkId] = Simulator::Now().GetSeconds();
+}
+
+void
+OnVoTxop(VoMacStats* stats, uint32_t staIdx, Time start, Time duration, uint8_t linkId)
+{
+    (void)duration;
+    auto& st = stats->sta[staIdx];
+    if (auto it = st.lastBackoffStartByLink.find(linkId); it != st.lastBackoffStartByLink.end())
+    {
+        stats->accessDelayMs.push_back((start.GetSeconds() - it->second) * 1000.0);
+    }
+}
+
+void
+OnMacTxDataFailed(VoMacStats* stats, Mac48Address)
+{
+    stats->macTxDataFailed++;
+}
+
+void
+OnMacTxFinalDataFailed(VoMacStats* stats, Mac48Address)
+{
+    stats->macTxFinalDataFailed++;
+}
+
+void
+OnMacTxRtsFailed(VoMacStats* stats, Mac48Address)
+{
+    stats->macTxRtsFailed++;
+}
 } // namespace
 
 int
@@ -135,6 +262,9 @@ main(int argc, char* argv[])
     bool enablePcap = true;
     bool enableAnim = true;
     bool useStaticSetup = false;
+    bool splitStasAcrossLinks = false;
+    bool enablePedca = true;
+    bool distributePedcaAcrossLinks = false;
     std::string pcapPrefix = "scratch/uhr-mld-ap-10-clients-vo-tcp";
     std::string animFile = "scratch/uhr-mld-ap-10-clients-vo-tcp.xml";
     std::string tailPrefix = "scratch/uhr-mld-ap-10-clients-vo-tcp-tail";
@@ -150,14 +280,26 @@ main(int argc, char* argv[])
     cmd.AddValue("enablePcap", "Enable pcap output", enablePcap);
     cmd.AddValue("enableAnim", "Enable NetAnim XML output", enableAnim);
     cmd.AddValue("useStaticSetup", "Use static association/ARP setup", useStaticSetup);
+    cmd.AddValue("splitStasAcrossLinks",
+                 "For nLinks=2, map half STAs to link 0 and half to link 1 using TID-to-link mapping",
+                 splitStasAcrossLinks);
+    cmd.AddValue("enablePedca", "Enable UHR VO P-EDCA behavior", enablePedca);
+    cmd.AddValue("distributePedcaAcrossLinks",
+                 "For multi-link STAs, allow P-EDCA only on a designated STA link to distribute contention",
+                 distributePedcaAcrossLinks);
     cmd.AddValue("pcapPrefix", "PCAP prefix/path", pcapPrefix);
     cmd.AddValue("animFile", "NetAnim XML file path", animFile);
     cmd.AddValue("tailPrefix", "Prefix for tail-latency CSV/plot outputs", tailPrefix);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(nLinks < 1 || nLinks > 2, "nLinks must be 1 or 2");
+    NS_ABORT_MSG_IF(splitStasAcrossLinks && nLinks != 2,
+                    "splitStasAcrossLinks requires nLinks=2");
 
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(payloadSize));
+    Config::SetDefault("ns3::QosTxop::EnableUhrPedca", BooleanValue(enablePedca));
+    Config::SetDefault("ns3::QosTxop::DistributePedcaAcrossLinks",
+                       BooleanValue(distributePedcaAcrossLinks));
 
     NodeContainer staNodes;
     NodeContainer apNode;
@@ -216,6 +358,26 @@ main(int argc, char* argv[])
 
     mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid), "EnableBeaconJitter", BooleanValue(false));
     NetDeviceContainer apDevice = wifi.Install(phy, mac, apNode);
+
+    if (splitStasAcrossLinks)
+    {
+        const std::string allTidsLink0 = "0,1,2,3,4,5,6,7 0";
+        const std::string allTidsLink1 = "0,1,2,3,4,5,6,7 1";
+        for (uint32_t i = 0; i < nStas; ++i)
+        {
+            auto staNetDev = DynamicCast<WifiNetDevice>(staDevices.Get(i));
+            NS_ABORT_MSG_IF(!staNetDev, "Expected WifiNetDevice for STA");
+            auto staMac = staNetDev->GetMac();
+            NS_ABORT_MSG_IF(!staMac, "Expected WifiMac on STA");
+            auto eht = staMac->GetEhtConfiguration();
+            NS_ABORT_MSG_IF(!eht, "Expected EHT configuration on STA");
+            const auto& mapping = (i < nStas / 2) ? allTidsLink0 : allTidsLink1;
+            eht->SetAttribute("TidToLinkMappingNegSupport",
+                              EnumValue(WifiTidToLinkMappingNegSupport::ANY_LINK_SET));
+            eht->SetAttribute("TidToLinkMappingUl", StringValue(mapping));
+            eht->SetAttribute("TidToLinkMappingDl", StringValue(mapping));
+        }
+    }
 
     if (enablePcap)
     {
@@ -285,6 +447,52 @@ main(int argc, char* argv[])
         src.Start(Seconds(appStart));
         src.Stop(Seconds(simTime));
         sourceApps.Add(src);
+    }
+
+    VoMacStats voMacStats;
+    voMacStats.sta.resize(nStas);
+    for (uint32_t i = 0; i < nStas; ++i)
+    {
+        auto staNetDev = DynamicCast<WifiNetDevice>(staDevices.Get(i));
+        NS_ABORT_MSG_IF(!staNetDev, "Expected WifiNetDevice for STA");
+        auto staMac = staNetDev->GetMac();
+        NS_ABORT_MSG_IF(!staMac, "Expected WifiMac on STA");
+        auto voTxop = staMac->GetQosTxop(AC_VO);
+        NS_ABORT_MSG_IF(!voTxop, "Expected VO QosTxop");
+        auto voQueue = voTxop->GetWifiMacQueue();
+        NS_ABORT_MSG_IF(!voQueue, "Expected VO WifiMacQueue");
+
+        voQueue->TraceConnectWithoutContext("Enqueue",
+                                            MakeBoundCallback(&OnVoQueueEnqueue, &voMacStats, i));
+        voQueue->TraceConnectWithoutContext("Dequeue",
+                                            MakeBoundCallback(&OnVoQueueDequeue, &voMacStats, i));
+        voQueue->TraceConnectWithoutContext("Drop",
+                                            MakeBoundCallback(&OnVoQueueDrop, &voMacStats, i));
+        voQueue->TraceConnectWithoutContext("DropBeforeEnqueue",
+                                            MakeBoundCallback(&OnVoQueueDropBeforeEnqueue,
+                                                              &voMacStats,
+                                                              i));
+        voQueue->TraceConnectWithoutContext("Expired",
+                                            MakeBoundCallback(&OnVoQueueExpired, &voMacStats, i));
+        voQueue->TraceConnectWithoutContext("PacketsInQueue",
+                                            MakeBoundCallback(&OnVoQueueDepthChange,
+                                                              &voMacStats,
+                                                              i));
+        voTxop->TraceConnectWithoutContext("BackoffTrace",
+                                           MakeBoundCallback(&OnVoBackoff, &voMacStats, i));
+        voTxop->TraceConnectWithoutContext("TxopTrace",
+                                           MakeBoundCallback(&OnVoTxop, &voMacStats, i));
+        for (uint8_t linkId = 0; linkId < nLinks; ++linkId)
+        {
+            auto rsm = staMac->GetWifiRemoteStationManager(linkId);
+            NS_ABORT_MSG_IF(!rsm, "Expected WifiRemoteStationManager");
+            rsm->TraceConnectWithoutContext("MacTxDataFailed",
+                                            MakeBoundCallback(&OnMacTxDataFailed, &voMacStats));
+            rsm->TraceConnectWithoutContext("MacTxFinalDataFailed",
+                                            MakeBoundCallback(&OnMacTxFinalDataFailed, &voMacStats));
+            rsm->TraceConnectWithoutContext("MacTxRtsFailed",
+                                            MakeBoundCallback(&OnMacTxRtsFailed, &voMacStats));
+        }
     }
 
     FlowMonitorHelper flowMonHelper;
@@ -388,6 +596,30 @@ main(int argc, char* argv[])
     const auto jitterPct = GetHistogramPercentiles(jitterBinsMs, totalJitterSamples);
     const auto completionPct = GetPercentiles(flowCompletionMs);
     const auto retransPct = GetPercentiles(flowRetransRatio);
+    const auto queueDelayPct = GetPercentiles(voMacStats.queueDelayMs);
+    const auto accessDelayPct = GetPercentiles(voMacStats.accessDelayMs);
+    uint64_t queueDrops = 0;
+    uint64_t queueDropBeforeEnqueue = 0;
+    uint64_t queueExpiredDrops = 0;
+    uint32_t queueDepthMax = 0;
+    double meanQueueDepth = 0.0;
+    for (auto& st : voMacStats.sta)
+    {
+        st.queueDepthArea += st.queueDepthLast * std::max(0.0, simTime - st.queueDepthLastUpdateSec);
+        meanQueueDepth += st.queueDepthArea / std::max(0.001, simTime);
+        queueDepthMax = std::max(queueDepthMax, st.queueDepthMax);
+        queueDrops += st.queueDrops;
+        queueDropBeforeEnqueue += st.queueDropBeforeEnqueue;
+        queueExpiredDrops += st.queueExpiredDrops;
+    }
+    meanQueueDepth /= std::max<uint32_t>(1, nStas);
+    const double macDataFailRate =
+        (totalTxPackets > 0) ? static_cast<double>(voMacStats.macTxDataFailed) / totalTxPackets : 0.0;
+    const double macFinalDataFailRate =
+        (totalTxPackets > 0) ? static_cast<double>(voMacStats.macTxFinalDataFailed) / totalTxPackets
+                             : 0.0;
+    const double macRtsFailRate =
+        (totalTxPackets > 0) ? static_cast<double>(voMacStats.macTxRtsFailed) / totalTxPackets : 0.0;
     const auto delayCdf = BuildCdf(delayBinsMs, totalDelaySamples);
     const auto jitterCdf = BuildCdf(jitterBinsMs, totalJitterSamples);
     const auto completionCdf = [&]() {
@@ -413,7 +645,16 @@ main(int argc, char* argv[])
     std::ofstream summary(tailPrefix + "-summary.csv");
     summary << "metric,value\n";
     summary << std::fixed << std::setprecision(6);
+    summary << "pedca_enabled," << (enablePedca ? 1 : 0) << "\n";
+    summary << "split_stas_across_links," << (splitStasAcrossLinks ? 1 : 0) << "\n";
+    summary << "distribute_pedca_across_links," << (distributePedcaAcrossLinks ? 1 : 0) << "\n";
+    summary << "stas_link0_target," << (splitStasAcrossLinks ? (nStas / 2) : nStas) << "\n";
+    summary << "stas_link1_target," << (splitStasAcrossLinks ? (nStas - nStas / 2) : 0) << "\n";
     summary << "flows_considered," << flowCompletionMs.size() << "\n";
+    summary << "aggregate_throughput_mbps," << throughputMbps << "\n";
+    summary << "delay_samples_present," << (totalDelaySamples > 0 ? 1 : 0) << "\n";
+    summary << "jitter_samples_present," << (totalJitterSamples > 0 ? 1 : 0) << "\n";
+    summary << "completion_samples_present," << (flowCompletionMs.empty() ? 0 : 1) << "\n";
     summary << "tx_packets," << totalTxPackets << "\n";
     summary << "rx_packets," << totalRxPackets << "\n";
     summary << "lost_packets," << totalLostPackets << "\n";
@@ -441,6 +682,27 @@ main(int argc, char* argv[])
     summary << "retrans_ratio_p95," << retransPct.p95 << "\n";
     summary << "retrans_ratio_p99," << retransPct.p99 << "\n";
     summary << "retrans_ratio_p99_9," << retransPct.p999 << "\n";
+    summary << "vo_mac_tx_data_failed," << voMacStats.macTxDataFailed << "\n";
+    summary << "vo_mac_tx_final_data_failed," << voMacStats.macTxFinalDataFailed << "\n";
+    summary << "vo_mac_tx_rts_failed," << voMacStats.macTxRtsFailed << "\n";
+    summary << "vo_mac_tx_data_failed_rate," << macDataFailRate << "\n";
+    summary << "vo_mac_tx_final_data_failed_rate," << macFinalDataFailRate << "\n";
+    summary << "vo_mac_tx_rts_failed_rate," << macRtsFailRate << "\n";
+    summary << "vo_channel_access_delay_p50_ms," << accessDelayPct.p50 << "\n";
+    summary << "vo_channel_access_delay_p90_ms," << accessDelayPct.p90 << "\n";
+    summary << "vo_channel_access_delay_p95_ms," << accessDelayPct.p95 << "\n";
+    summary << "vo_channel_access_delay_p99_ms," << accessDelayPct.p99 << "\n";
+    summary << "vo_channel_access_delay_p99_9_ms," << accessDelayPct.p999 << "\n";
+    summary << "vo_queue_delay_p50_ms," << queueDelayPct.p50 << "\n";
+    summary << "vo_queue_delay_p90_ms," << queueDelayPct.p90 << "\n";
+    summary << "vo_queue_delay_p95_ms," << queueDelayPct.p95 << "\n";
+    summary << "vo_queue_delay_p99_ms," << queueDelayPct.p99 << "\n";
+    summary << "vo_queue_delay_p99_9_ms," << queueDelayPct.p999 << "\n";
+    summary << "vo_queue_depth_mean_packets," << meanQueueDepth << "\n";
+    summary << "vo_queue_depth_max_packets," << queueDepthMax << "\n";
+    summary << "vo_queue_drop_packets," << queueDrops << "\n";
+    summary << "vo_queue_drop_before_enqueue_packets," << queueDropBeforeEnqueue << "\n";
+    summary << "vo_queue_expired_drop_packets," << queueExpiredDrops << "\n";
 
     std::ofstream plt(tailPrefix + "-cdf.plt");
     plt << "set terminal pngcairo size 1280,720\n";
@@ -464,6 +726,14 @@ main(int argc, char* argv[])
     std::cout << "  AP IP: " << apAddr << "\n";
     std::cout << "  Data mode: " << dataMode << ", channel width: " << channelWidth << " MHz\n";
     std::cout << "  RTS/CTS: forced (threshold=0)\n";
+    std::cout << "  P-EDCA enabled: " << (enablePedca ? "yes" : "no") << "\n";
+    std::cout << "  P-EDCA distribution across links: "
+              << (distributePedcaAcrossLinks ? "yes" : "no") << "\n";
+    if (splitStasAcrossLinks)
+    {
+        std::cout << "  STA link split target: link0=" << (nStas / 2)
+                  << ", link1=" << (nStas - nStas / 2) << "\n";
+    }
     std::cout << "  VO mapping: TOS=0xb8 for all sources\n";
     std::cout << "  Total RX bytes at AP: " << totalRx << "\n";
     std::cout << "  Aggregate throughput: " << throughputMbps << " Mbit/s\n";
@@ -473,6 +743,30 @@ main(int argc, char* argv[])
               << " / " << jitterPct.p999 << "\n";
     std::cout << "  Flow completion p95/p99/p99.9 (ms): " << completionPct.p95 << " / "
               << completionPct.p99 << " / " << completionPct.p999 << "\n";
+    std::cout << "  VO MAC data failed/final failed: " << voMacStats.macTxDataFailed << " / "
+              << voMacStats.macTxFinalDataFailed << "\n";
+    std::cout << "  VO RTS failed (collision proxy): " << voMacStats.macTxRtsFailed << "\n";
+    std::cout << "  VO channel access delay p95/p99 (ms): " << accessDelayPct.p95 << " / "
+              << accessDelayPct.p99 << "\n";
+    std::cout << "  VO queue delay p95/p99 (ms): " << queueDelayPct.p95 << " / "
+              << queueDelayPct.p99 << "\n";
+    std::cout << "  VO queue depth mean/max (pkts): " << meanQueueDepth << " / " << queueDepthMax
+              << "\n";
+    std::cout << "  VO queue drops (drop/before-enqueue/expired): " << queueDrops << " / "
+              << queueDropBeforeEnqueue << " / " << queueExpiredDrops << "\n";
+    if (totalDelaySamples == 0)
+    {
+        std::cout << "  WARNING: No delay samples collected; delay CDF CSV contains only header\n";
+    }
+    if (totalJitterSamples == 0)
+    {
+        std::cout << "  WARNING: No jitter samples collected; jitter CDF CSV contains only header\n";
+    }
+    if (flowCompletionMs.empty())
+    {
+        std::cout
+            << "  WARNING: No flow completion samples collected; completion CDF CSV contains only header\n";
+    }
     std::cout << "  Tail outputs: " << tailPrefix << "-summary.csv, " << tailPrefix
               << "-delay-cdf.csv, " << tailPrefix << "-jitter-cdf.csv, " << tailPrefix
               << "-completion-cdf.csv, " << tailPrefix << "-cdf.plt\n";
