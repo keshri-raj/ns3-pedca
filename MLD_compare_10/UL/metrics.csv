@@ -1,0 +1,6 @@
+metric,pedca,dist
+throughput_mbps,316.571180,317.689283
+delay_p95_ms,9.000000,9.000000
+jitter_p95_ms,1.000000,1.000000
+rts_failed_rate,0.003762,0.003621
+queue_delay_p95_ms,14.988000,13.261000

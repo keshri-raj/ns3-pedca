@@ -113,6 +113,21 @@ QosTxop::GetTypeId()
                 BooleanValue(false),
                 MakeBooleanAccessor(&QosTxop::m_distributePedcaAcrossLinks),
                 MakeBooleanChecker())
+            .AddAttribute("RandomTxopLimitEnabled",
+                          "Randomize TXOP limit on each contention win.",
+                          BooleanValue(false),
+                          MakeBooleanAccessor(&QosTxop::m_randomTxopLimitEnabled),
+                          MakeBooleanChecker())
+            .AddAttribute("RandomTxopLimitMin",
+                          "Minimum TXOP limit for randomization.",
+                          TimeValue(MicroSeconds(1500)),
+                          MakeTimeAccessor(&QosTxop::m_randomTxopLimitMin),
+                          MakeTimeChecker())
+            .AddAttribute("RandomTxopLimitMax",
+                          "Maximum TXOP limit for randomization.",
+                          TimeValue(MicroSeconds(5000)),
+                          MakeTimeAccessor(&QosTxop::m_randomTxopLimitMax),
+                          MakeTimeChecker())
             .AddTraceSource("TxopTrace",
                             "Trace source for TXOP start and duration times",
                             MakeTraceSourceAccessor(&QosTxop::m_txopTrace),
@@ -129,6 +144,7 @@ QosTxop::QosTxop()
 {
     NS_LOG_FUNCTION(this);
     m_baManager = CreateObject<BlockAckManager>();
+    m_randomTxopRv = CreateObject<UniformRandomVariable>();
 }
 
 void
@@ -220,6 +236,31 @@ QosTxop::SetDroppedMpduCallback(DroppedMpdu callback)
     NS_LOG_FUNCTION(this << &callback);
     Txop::SetDroppedMpduCallback(callback);
     m_baManager->SetDroppedOldMpduCallback(callback.Bind(WIFI_MAC_DROP_QOS_OLD_PACKET));
+}
+
+bool
+QosTxop::IsRandomTxopLimitEnabled() const
+{
+    return m_randomTxopLimitEnabled;
+}
+
+void
+QosTxop::UpdateRandomTxopLimit(uint8_t linkId)
+{
+    if (!m_randomTxopLimitEnabled)
+    {
+        return;
+    }
+    auto minUs = m_randomTxopLimitMin.GetMicroSeconds();
+    auto maxUs = m_randomTxopLimitMax.GetMicroSeconds();
+    if (maxUs < minUs)
+    {
+        std::swap(maxUs, minUs);
+    }
+    const uint64_t minTicks = std::max<uint64_t>(1, (minUs + 31) / 32);
+    const uint64_t maxTicks = std::max<uint64_t>(minTicks, maxUs / 32);
+    const uint64_t sampledTicks = m_randomTxopRv->GetInteger(minTicks, maxTicks);
+    SetTxopLimit(MicroSeconds(sampledTicks * 32), linkId);
 }
 
 void

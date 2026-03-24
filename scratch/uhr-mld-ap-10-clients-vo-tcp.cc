@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace ns3;
@@ -59,6 +60,12 @@ struct VoMacStats
     uint64_t macTxDataFailed{0};
     uint64_t macTxFinalDataFailed{0};
     uint64_t macTxRtsFailed{0};
+};
+
+struct AccessStats
+{
+    std::vector<std::map<uint8_t, double>> lastBackoffStartByLink;
+    std::vector<double> accessDelayMs;
 };
 
 double
@@ -129,6 +136,23 @@ BuildCdf(const std::map<double, uint64_t>& bins, uint64_t totalCount)
     {
         cumulative += count;
         cdf.emplace_back(value, static_cast<double>(cumulative) / static_cast<double>(totalCount));
+    }
+    return cdf;
+}
+
+std::vector<std::pair<double, double>>
+BuildCdfFromValues(std::vector<double> values)
+{
+    std::vector<std::pair<double, double>> cdf;
+    if (values.empty())
+    {
+        return cdf;
+    }
+    std::sort(values.begin(), values.end());
+    cdf.reserve(values.size());
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        cdf.emplace_back(values[i], static_cast<double>(i + 1) / static_cast<double>(values.size()));
     }
     return cdf;
 }
@@ -231,6 +255,24 @@ OnVoTxop(VoMacStats* stats, uint32_t staIdx, Time start, Time duration, uint8_t 
 }
 
 void
+OnAccessBackoff(AccessStats* stats, uint32_t idx, uint32_t slots, uint8_t linkId)
+{
+    (void)slots;
+    stats->lastBackoffStartByLink[idx][linkId] = Simulator::Now().GetSeconds();
+}
+
+void
+OnAccessTxop(AccessStats* stats, uint32_t idx, Time start, Time duration, uint8_t linkId)
+{
+    (void)duration;
+    if (auto it = stats->lastBackoffStartByLink[idx].find(linkId);
+        it != stats->lastBackoffStartByLink[idx].end())
+    {
+        stats->accessDelayMs.push_back((start.GetSeconds() - it->second) * 1000.0);
+    }
+}
+
+void
 OnMacTxDataFailed(VoMacStats* stats, Mac48Address)
 {
     stats->macTxDataFailed++;
@@ -265,9 +307,12 @@ main(int argc, char* argv[])
     bool splitStasAcrossLinks = false;
     bool enablePedca = true;
     bool distributePedcaAcrossLinks = false;
+    bool enableUl = true;
+    bool enableDl = true;
     std::string pcapPrefix = "scratch/uhr-mld-ap-10-clients-vo-tcp";
     std::string animFile = "scratch/uhr-mld-ap-10-clients-vo-tcp.xml";
     std::string tailPrefix = "scratch/uhr-mld-ap-10-clients-vo-tcp-tail";
+    std::string accessPrefix = "scratch/uhr-mld-ap-10-clients-vo-tcp-access";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("nStas", "Number of UHR MLD clients", nStas);
@@ -287,9 +332,12 @@ main(int argc, char* argv[])
     cmd.AddValue("distributePedcaAcrossLinks",
                  "For multi-link STAs, allow P-EDCA only on a designated STA link to distribute contention",
                  distributePedcaAcrossLinks);
+    cmd.AddValue("enableUl", "Enable UL TCP flows (STA -> AP)", enableUl);
+    cmd.AddValue("enableDl", "Enable DL TCP flows (AP -> STA)", enableDl);
     cmd.AddValue("pcapPrefix", "PCAP prefix/path", pcapPrefix);
     cmd.AddValue("animFile", "NetAnim XML file path", animFile);
     cmd.AddValue("tailPrefix", "Prefix for tail-latency CSV/plot outputs", tailPrefix);
+    cmd.AddValue("accessPrefix", "Prefix for channel access CDF outputs", accessPrefix);
     cmd.Parse(argc, argv);
 
     NS_ABORT_MSG_IF(nLinks < 1 || nLinks > 2, "nLinks must be 1 or 2");
@@ -421,6 +469,11 @@ main(int argc, char* argv[])
     allDevices.Add(staDevices);
     Ipv4InterfaceContainer ifaces = ipv4.Assign(allDevices);
     const Ipv4Address apAddr = ifaces.GetAddress(0);
+    std::unordered_set<Ipv4Address> staAddrs;
+    for (uint32_t i = 0; i < nStas; ++i)
+    {
+        staAddrs.insert(ifaces.GetAddress(i + 1));
+    }
 
     if (useStaticSetup)
     {
@@ -430,23 +483,48 @@ main(int argc, char* argv[])
 
     ApplicationContainer sinkApps;
     ApplicationContainer sourceApps;
+    ApplicationContainer dlSinkApps;
+    ApplicationContainer dlSourceApps;
     for (uint32_t i = 0; i < nStas; ++i)
     {
         const uint16_t port = 7000 + i;
-        Address sinkAddr(InetSocketAddress(Ipv4Address::GetAny(), port));
-        PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", sinkAddr);
-        auto sink = sinkHelper.Install(apNode.Get(0));
-        sink.Start(Seconds(0.0));
-        sink.Stop(Seconds(simTime));
-        sinkApps.Add(sink);
+        if (enableUl)
+        {
+            Address sinkAddr(InetSocketAddress(Ipv4Address::GetAny(), port));
+            PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", sinkAddr);
+            auto sink = sinkHelper.Install(apNode.Get(0));
+            sink.Start(Seconds(0.0));
+            sink.Stop(Seconds(simTime));
+            sinkApps.Add(sink);
 
-        BulkSendHelper sourceHelper("ns3::TcpSocketFactory", InetSocketAddress(apAddr, port));
-        sourceHelper.SetAttribute("MaxBytes", UintegerValue(0));
-        sourceHelper.SetAttribute("Tos", UintegerValue(0xb8));
-        auto src = sourceHelper.Install(staNodes.Get(i));
-        src.Start(Seconds(appStart));
-        src.Stop(Seconds(simTime));
-        sourceApps.Add(src);
+            BulkSendHelper sourceHelper("ns3::TcpSocketFactory", InetSocketAddress(apAddr, port));
+            sourceHelper.SetAttribute("MaxBytes", UintegerValue(0));
+            sourceHelper.SetAttribute("Tos", UintegerValue(0xb8));
+            auto src = sourceHelper.Install(staNodes.Get(i));
+            src.Start(Seconds(appStart));
+            src.Stop(Seconds(simTime));
+            sourceApps.Add(src);
+        }
+
+        if (enableDl)
+        {
+            const uint16_t dlPort = 8000 + i;
+            Address dlSinkAddr(InetSocketAddress(Ipv4Address::GetAny(), dlPort));
+            PacketSinkHelper dlSinkHelper("ns3::TcpSocketFactory", dlSinkAddr);
+            auto dlSink = dlSinkHelper.Install(staNodes.Get(i));
+            dlSink.Start(Seconds(0.0));
+            dlSink.Stop(Seconds(simTime));
+            dlSinkApps.Add(dlSink);
+
+            BulkSendHelper dlSourceHelper("ns3::TcpSocketFactory",
+                                          InetSocketAddress(ifaces.GetAddress(i + 1), dlPort));
+            dlSourceHelper.SetAttribute("MaxBytes", UintegerValue(0));
+            dlSourceHelper.SetAttribute("Tos", UintegerValue(0xb8));
+            auto dlSrc = dlSourceHelper.Install(apNode.Get(0));
+            dlSrc.Start(Seconds(appStart));
+            dlSrc.Stop(Seconds(simTime));
+            dlSourceApps.Add(dlSrc);
+        }
     }
 
     VoMacStats voMacStats;
@@ -495,6 +573,44 @@ main(int argc, char* argv[])
         }
     }
 
+    AccessStats ulAccessStats;
+    AccessStats dlAccessStats;
+    ulAccessStats.lastBackoffStartByLink.resize(nStas);
+    dlAccessStats.lastBackoffStartByLink.resize(1);
+    for (uint32_t i = 0; i < nStas; ++i)
+    {
+        auto staNetDev = DynamicCast<WifiNetDevice>(staDevices.Get(i));
+        NS_ABORT_MSG_IF(!staNetDev, "Expected WifiNetDevice for STA");
+        auto staMac = staNetDev->GetMac();
+        auto voTxop = staMac->GetQosTxop(AC_VO);
+        if (enableUl)
+        {
+            voTxop->TraceConnectWithoutContext("BackoffTrace",
+                                               MakeBoundCallback(&OnAccessBackoff,
+                                                                 &ulAccessStats,
+                                                                 i));
+            voTxop->TraceConnectWithoutContext("TxopTrace",
+                                               MakeBoundCallback(&OnAccessTxop,
+                                                                 &ulAccessStats,
+                                                                 i));
+        }
+    }
+    if (enableDl)
+    {
+        auto apNetDev = DynamicCast<WifiNetDevice>(apDevice.Get(0));
+        NS_ABORT_MSG_IF(!apNetDev, "Expected WifiNetDevice for AP");
+        auto apMac = apNetDev->GetMac();
+        auto apVoTxop = apMac->GetQosTxop(AC_VO);
+        apVoTxop->TraceConnectWithoutContext("BackoffTrace",
+                                             MakeBoundCallback(&OnAccessBackoff,
+                                                               &dlAccessStats,
+                                                               0));
+        apVoTxop->TraceConnectWithoutContext("TxopTrace",
+                                             MakeBoundCallback(&OnAccessTxop,
+                                                               &dlAccessStats,
+                                                               0));
+    }
+
     FlowMonitorHelper flowMonHelper;
     Ptr<FlowMonitor> flowMonitor = flowMonHelper.InstallAll();
     Ptr<Ipv4FlowClassifier> classifier =
@@ -511,6 +627,7 @@ main(int argc, char* argv[])
     Simulator::Run();
 
     uint64_t totalRx = 0;
+    uint64_t totalDlRx = 0;
     for (uint32_t i = 0; i < sinkApps.GetN(); ++i)
     {
         auto sink = DynamicCast<PacketSink>(sinkApps.Get(i));
@@ -518,16 +635,30 @@ main(int argc, char* argv[])
         totalRx += rx;
         std::cout << "STA-" << i << " -> AP bytes: " << rx << "\n";
     }
+    for (uint32_t i = 0; i < dlSinkApps.GetN(); ++i)
+    {
+        auto sink = DynamicCast<PacketSink>(dlSinkApps.Get(i));
+        totalDlRx += sink->GetTotalRx();
+    }
 
     const double active = std::max(0.001, simTime - appStart);
     const double throughputMbps = (totalRx * 8.0) / (active * 1e6);
+    const double dlThroughputMbps = (totalDlRx * 8.0) / (active * 1e6);
 
     flowMonitor->CheckForLostPackets();
 
     std::map<double, uint64_t> delayBinsMs;
     std::map<double, uint64_t> jitterBinsMs;
+    std::map<double, uint64_t> ulDelayBinsMs;
+    std::map<double, uint64_t> ulJitterBinsMs;
+    std::map<double, uint64_t> dlDelayBinsMs;
+    std::map<double, uint64_t> dlJitterBinsMs;
     uint64_t totalDelaySamples = 0;
     uint64_t totalJitterSamples = 0;
+    uint64_t ulDelaySamples = 0;
+    uint64_t ulJitterSamples = 0;
+    uint64_t dlDelaySamples = 0;
+    uint64_t dlJitterSamples = 0;
     uint64_t delayAbove10Ms = 0;
     uint64_t delayAbove20Ms = 0;
     uint64_t totalTxPackets = 0;
@@ -539,7 +670,13 @@ main(int argc, char* argv[])
     for (const auto& [flowId, st] : flowMonitor->GetFlowStats())
     {
         const auto tuple = classifier->FindFlow(flowId);
-        if (tuple.protocol != 6 || tuple.destinationAddress != apAddr)
+        if (tuple.protocol != 6)
+        {
+            continue;
+        }
+        const bool isUl = (tuple.destinationAddress == apAddr);
+        const bool isDl = staAddrs.find(tuple.destinationAddress) != staAddrs.end();
+        if ((!enableUl && isUl) || (!enableDl && isDl) || (!isUl && !isDl))
         {
             continue;
         }
@@ -569,6 +706,16 @@ main(int argc, char* argv[])
             const auto binEndMs = st.delayHistogram.GetBinEnd(i) * 1000.0;
             delayBinsMs[binEndMs] += count;
             totalDelaySamples += count;
+            if (isUl)
+            {
+                ulDelayBinsMs[binEndMs] += count;
+                ulDelaySamples += count;
+            }
+            if (isDl)
+            {
+                dlDelayBinsMs[binEndMs] += count;
+                dlDelaySamples += count;
+            }
             if (binEndMs > 10.0)
             {
                 delayAbove10Ms += count;
@@ -589,11 +736,25 @@ main(int argc, char* argv[])
             const auto binEndMs = st.jitterHistogram.GetBinEnd(i) * 1000.0;
             jitterBinsMs[binEndMs] += count;
             totalJitterSamples += count;
+            if (isUl)
+            {
+                ulJitterBinsMs[binEndMs] += count;
+                ulJitterSamples += count;
+            }
+            if (isDl)
+            {
+                dlJitterBinsMs[binEndMs] += count;
+                dlJitterSamples += count;
+            }
         }
     }
 
     const auto delayPct = GetHistogramPercentiles(delayBinsMs, totalDelaySamples);
     const auto jitterPct = GetHistogramPercentiles(jitterBinsMs, totalJitterSamples);
+    const auto ulDelayPct = GetHistogramPercentiles(ulDelayBinsMs, ulDelaySamples);
+    const auto ulJitterPct = GetHistogramPercentiles(ulJitterBinsMs, ulJitterSamples);
+    const auto dlDelayPct = GetHistogramPercentiles(dlDelayBinsMs, dlDelaySamples);
+    const auto dlJitterPct = GetHistogramPercentiles(dlJitterBinsMs, dlJitterSamples);
     const auto completionPct = GetPercentiles(flowCompletionMs);
     const auto retransPct = GetPercentiles(flowRetransRatio);
     const auto queueDelayPct = GetPercentiles(voMacStats.queueDelayMs);
@@ -648,10 +809,13 @@ main(int argc, char* argv[])
     summary << "pedca_enabled," << (enablePedca ? 1 : 0) << "\n";
     summary << "split_stas_across_links," << (splitStasAcrossLinks ? 1 : 0) << "\n";
     summary << "distribute_pedca_across_links," << (distributePedcaAcrossLinks ? 1 : 0) << "\n";
+    summary << "enable_ul," << (enableUl ? 1 : 0) << "\n";
+    summary << "enable_dl," << (enableDl ? 1 : 0) << "\n";
     summary << "stas_link0_target," << (splitStasAcrossLinks ? (nStas / 2) : nStas) << "\n";
     summary << "stas_link1_target," << (splitStasAcrossLinks ? (nStas - nStas / 2) : 0) << "\n";
     summary << "flows_considered," << flowCompletionMs.size() << "\n";
     summary << "aggregate_throughput_mbps," << throughputMbps << "\n";
+    summary << "dl_throughput_mbps," << dlThroughputMbps << "\n";
     summary << "delay_samples_present," << (totalDelaySamples > 0 ? 1 : 0) << "\n";
     summary << "jitter_samples_present," << (totalJitterSamples > 0 ? 1 : 0) << "\n";
     summary << "completion_samples_present," << (flowCompletionMs.empty() ? 0 : 1) << "\n";
@@ -664,6 +828,16 @@ main(int argc, char* argv[])
     summary << "delay_p95_ms," << delayPct.p95 << "\n";
     summary << "delay_p99_ms," << delayPct.p99 << "\n";
     summary << "delay_p99_9_ms," << delayPct.p999 << "\n";
+    summary << "ul_delay_p50_ms," << ulDelayPct.p50 << "\n";
+    summary << "ul_delay_p90_ms," << ulDelayPct.p90 << "\n";
+    summary << "ul_delay_p95_ms," << ulDelayPct.p95 << "\n";
+    summary << "ul_delay_p99_ms," << ulDelayPct.p99 << "\n";
+    summary << "ul_delay_p99_9_ms," << ulDelayPct.p999 << "\n";
+    summary << "dl_delay_p50_ms," << dlDelayPct.p50 << "\n";
+    summary << "dl_delay_p90_ms," << dlDelayPct.p90 << "\n";
+    summary << "dl_delay_p95_ms," << dlDelayPct.p95 << "\n";
+    summary << "dl_delay_p99_ms," << dlDelayPct.p99 << "\n";
+    summary << "dl_delay_p99_9_ms," << dlDelayPct.p999 << "\n";
     summary << "delay_over_10ms_packets," << delayAbove10Ms << "\n";
     summary << "delay_over_20ms_packets," << delayAbove20Ms << "\n";
     summary << "jitter_samples," << totalJitterSamples << "\n";
@@ -672,6 +846,16 @@ main(int argc, char* argv[])
     summary << "jitter_p95_ms," << jitterPct.p95 << "\n";
     summary << "jitter_p99_ms," << jitterPct.p99 << "\n";
     summary << "jitter_p99_9_ms," << jitterPct.p999 << "\n";
+    summary << "ul_jitter_p50_ms," << ulJitterPct.p50 << "\n";
+    summary << "ul_jitter_p90_ms," << ulJitterPct.p90 << "\n";
+    summary << "ul_jitter_p95_ms," << ulJitterPct.p95 << "\n";
+    summary << "ul_jitter_p99_ms," << ulJitterPct.p99 << "\n";
+    summary << "ul_jitter_p99_9_ms," << ulJitterPct.p999 << "\n";
+    summary << "dl_jitter_p50_ms," << dlJitterPct.p50 << "\n";
+    summary << "dl_jitter_p90_ms," << dlJitterPct.p90 << "\n";
+    summary << "dl_jitter_p95_ms," << dlJitterPct.p95 << "\n";
+    summary << "dl_jitter_p99_ms," << dlJitterPct.p99 << "\n";
+    summary << "dl_jitter_p99_9_ms," << dlJitterPct.p999 << "\n";
     summary << "flow_completion_p50_ms," << completionPct.p50 << "\n";
     summary << "flow_completion_p90_ms," << completionPct.p90 << "\n";
     summary << "flow_completion_p95_ms," << completionPct.p95 << "\n";
@@ -720,6 +904,32 @@ main(int argc, char* argv[])
         << "-jitter-cdf.csv' using 1:2 with lines lw 2 title 'Jitter CDF',\\\n";
     plt << "     '" << tailPrefix
         << "-completion-cdf.csv' using 1:2 with lines lw 2 title 'Flow completion CDF'\n";
+
+    const auto ulAccessCdf = BuildCdfFromValues(ulAccessStats.accessDelayMs);
+    const auto dlAccessCdf = BuildCdfFromValues(dlAccessStats.accessDelayMs);
+    WriteCdfCsv(accessPrefix + "-ul-cdf.csv", ulAccessCdf);
+    WriteCdfCsv(accessPrefix + "-dl-cdf.csv", dlAccessCdf);
+    std::ofstream accessPlt(accessPrefix + "-cdf.plt");
+    accessPlt << "set terminal pngcairo size 1200,800\n";
+    accessPlt << "set datafile separator ','\n";
+    accessPlt << "set output '" << accessPrefix << "-cdf.png'\n";
+    accessPlt << "set title 'Channel Access Time CDF (UL vs DL)'\n";
+    accessPlt << "set xlabel 'Channel Access Time (ms)'\n";
+    accessPlt << "set ylabel 'CDF'\n";
+    accessPlt << "set key left bottom\n";
+    accessPlt << "set grid\n";
+    accessPlt << "plot '" << accessPrefix
+              << "-ul-cdf.csv' using 1:2 with lines lw 2 title 'UL',\\\n";
+    accessPlt << "     '" << accessPrefix
+              << "-dl-cdf.csv' using 1:2 with lines lw 2 title 'DL'\n";
+    if (enableUl && ulAccessStats.accessDelayMs.empty())
+    {
+        std::cout << "  WARNING: No UL channel access samples collected\n";
+    }
+    if (enableDl && dlAccessStats.accessDelayMs.empty())
+    {
+        std::cout << "  WARNING: No DL channel access samples collected\n";
+    }
 
     std::cout << "UHR MLD AP + " << nStas << " MLD STAs TCP VO uplink summary\n";
     std::cout << "  Links per MLD: " << nLinks << "\n";

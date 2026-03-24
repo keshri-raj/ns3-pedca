@@ -202,6 +202,10 @@ QosFrameExchangeManager::StartTransmission(Ptr<Txop> edca, MHz_u allowedWidth)
 
     m_allowedWidth = allowedWidth;
     auto qosTxop = StaticCast<QosTxop>(edca);
+    if (qosTxop->IsRandomTxopLimitEnabled())
+    {
+        qosTxop->UpdateRandomTxopLimit(m_linkId);
+    }
     return StartTransmission(qosTxop, qosTxop->GetTxopLimit(m_linkId));
 }
 

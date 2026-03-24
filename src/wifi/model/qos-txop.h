@@ -66,6 +66,11 @@ class QosTxop : public Txop
     void NotifyChannelReleased(uint8_t linkId) override;
     void SetDroppedMpduCallback(DroppedMpdu callback) override;
 
+    /// Whether random TXOP limit selection is enabled.
+    bool IsRandomTxopLimitEnabled() const;
+    /// Update TXOP limit for the given link using the configured random range.
+    void UpdateRandomTxopLimit(uint8_t linkId);
+
     /**
      * Get the access category of this object.
      *
@@ -580,6 +585,10 @@ class QosTxop : public Txop
                                               //!< time
     bool m_enableUhrPedca{true}; //!< enable UHR VO P-EDCA behavior
     bool m_distributePedcaAcrossLinks{false}; //!< split P-EDCA attempts across links by STA
+    bool m_randomTxopLimitEnabled{false}; //!< randomize TXOP limit on each contention win
+    Time m_randomTxopLimitMin{MicroSeconds(1500)};
+    Time m_randomTxopLimitMax{MicroSeconds(5000)};
+    Ptr<UniformRandomVariable> m_randomTxopRv;
 
     /// TracedCallback for TXOP trace typedef
     typedef TracedCallback<Time /* start time */, Time /* duration */, uint8_t /* link ID*/>
