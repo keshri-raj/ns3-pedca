@@ -695,10 +695,11 @@ QosFrameExchangeManager::TransmissionSucceeded()
 
     if (m_edca->IsPedcaMode(m_linkId))
     {
+        m_edca->RecordPedcaSuccess(m_linkId);
         m_edca->ResetPedcaCounters(m_linkId);
         std::ostringstream okLog;
         okLog << Simulator::Now().GetSeconds()
-              << "s [PEDCA][VO] data exchange success; reset m_ssrc=0 psrc=0";
+              << "s [PEDCA][VO] data exchange success; reset trigger=0 psrc=0";
         PedcaFileLog(okLog.str());
     }
 
@@ -742,11 +743,16 @@ QosFrameExchangeManager::TransmissionFailed(bool forceCurrentCw)
     {
         m_edca->SetPedcaAfterCts(m_linkId, false);
         m_edca->IncrementPsrcCount(m_linkId);
+        m_edca->RecordPedcaFailure(m_linkId);
         std::ostringstream failLog;
         failLog << Simulator::Now().GetSeconds()
                 << "s [PEDCA][VO] data exchange failed; increment psrc="
                 << m_edca->GetPsrcCount(m_linkId);
         PedcaFileLog(failLog.str());
+    }
+    else
+    {
+        m_edca->IncrementPedcaTriggerCount(m_linkId);
     }
 
     if (m_initialFrame)

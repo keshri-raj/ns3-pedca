@@ -1,0 +1,12 @@
+services:
+  ns3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ns3-uhr-local:latest
+    working_dir: /usr/local/ns-3
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./results:/usr/local/ns-3/results
+    command: /bin/bash

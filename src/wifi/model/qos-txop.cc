@@ -113,6 +113,16 @@ QosTxop::GetTypeId()
                 BooleanValue(false),
                 MakeBooleanAccessor(&QosTxop::m_distributePedcaAcrossLinks),
                 MakeBooleanChecker())
+            .AddAttribute("QsrcThreshold",
+                          "Retry threshold for entering P-EDCA.",
+                          UintegerValue(2),
+                          MakeUintegerAccessor(&QosTxop::m_qsrcThreshold),
+                          MakeUintegerChecker<uint32_t>(0))
+            .AddAttribute("PsrcThreshold",
+                          "P-EDCA retry threshold before resetting to EDCA.",
+                          UintegerValue(2),
+                          MakeUintegerAccessor(&QosTxop::m_psrcThreshold),
+                          MakeUintegerChecker<uint32_t>(0))
             .AddAttribute("RandomTxopLimitEnabled",
                           "Randomize TXOP limit on each contention win.",
                           BooleanValue(false),
@@ -372,6 +382,105 @@ QosTxop::GetPsrcCount(uint8_t linkId) const
 }
 
 void
+QosTxop::RecordPedcaSelection(uint8_t linkId)
+{
+    ++GetLink(linkId).pedcaSelections;
+}
+
+void
+QosTxop::RecordPedcaCtsAttempt(uint8_t linkId)
+{
+    ++GetLink(linkId).pedcaCtsAttempts;
+}
+
+void
+QosTxop::RecordPedcaSuccess(uint8_t linkId)
+{
+    ++GetLink(linkId).pedcaSuccesses;
+}
+
+void
+QosTxop::RecordPedcaFailure(uint8_t linkId)
+{
+    ++GetLink(linkId).pedcaFailures;
+}
+
+void
+QosTxop::RecordPedcaReset(uint8_t linkId)
+{
+    ++GetLink(linkId).pedcaResets;
+}
+
+void
+QosTxop::IncrementPedcaTriggerCount(uint8_t linkId)
+{
+    auto& link = GetLink(linkId);
+    ++link.pedcaTriggerCount;
+    link.pedcaMaxTriggerCount = std::max(link.pedcaMaxTriggerCount, link.pedcaTriggerCount);
+    if (link.pedcaTriggerCount >= m_qsrcThreshold && !link.pedcaMode)
+    {
+        link.pedcaMode = true;
+        RecordPedcaSelection(linkId);
+    }
+}
+
+uint32_t
+QosTxop::GetPedcaTriggerCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaTriggerCount;
+}
+
+uint32_t
+QosTxop::GetPedcaMaxTriggerCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaMaxTriggerCount;
+}
+
+void
+QosTxop::RecordPedcaEligibilityCheck(uint8_t linkId, uint32_t triggerCount)
+{
+    auto& link = GetLink(linkId);
+    ++link.pedcaEligibilityChecks;
+    link.pedcaMaxTriggerCount = std::max(link.pedcaMaxTriggerCount, triggerCount);
+}
+
+uint32_t
+QosTxop::GetPedcaSelectionCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaSelections;
+}
+
+uint32_t
+QosTxop::GetPedcaCtsAttemptCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaCtsAttempts;
+}
+
+uint32_t
+QosTxop::GetPedcaSuccessCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaSuccesses;
+}
+
+uint32_t
+QosTxop::GetPedcaFailureCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaFailures;
+}
+
+uint32_t
+QosTxop::GetPedcaResetCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaResets;
+}
+
+uint32_t
+QosTxop::GetPedcaEligibilityCheckCount(uint8_t linkId) const
+{
+    return GetLink(linkId).pedcaEligibilityChecks;
+}
+
+void
 QosTxop::MarkPedcaCtsPending(uint8_t linkId)
 {
     GetLink(linkId).pedcaCtsPending = true;
@@ -407,6 +516,7 @@ QosTxop::ResetPedcaCounters(uint8_t linkId)
     auto& link = GetLink(linkId);
     link.staRetryCount = 0;
     link.psrc = 0;
+    link.pedcaTriggerCount = 0;
     link.pedcaCtsPending = false;
     link.pedcaMode = false;
     link.pedcaAfterCts = false;
@@ -466,21 +576,22 @@ QosTxop::GenerateBackoff(uint8_t linkId)
         }
 
         auto& link = GetLink(linkId);
-        const auto mSsrc = GetStaRetryCount(linkId);
+        const auto triggerCount = GetPedcaTriggerCount(linkId);
         const auto psrc = GetPsrcCount(linkId);
-        if (mSsrc >= QSRC_THRESHOLD || link.pedcaMode)
+        RecordPedcaEligibilityCheck(linkId, triggerCount);
+        if (triggerCount >= m_qsrcThreshold || link.pedcaMode)
         {
-            if (psrc == PSRC_THRESHOLD)
+            if (psrc == m_psrcThreshold)
             {
+                RecordPedcaReset(linkId);
                 ResetPedcaCounters(linkId);
                 std::ostringstream reset;
                 reset << Simulator::Now().GetSeconds()
-                      << "s [UHR][VO] psrc reached threshold; reset m_ssrc=0 psrc=0, use EDCA";
+                      << "s [UHR][VO] psrc reached threshold; reset trigger=0 psrc=0, use EDCA";
                 PedcaFileLog(reset.str());
                 Txop::GenerateBackoff(linkId);
                 return;
             }
-
             link.pedcaMode = true;
             if (link.pedcaAfterCts)
             {
@@ -494,7 +605,7 @@ QosTxop::GenerateBackoff(uint8_t linkId)
                 (edcaAifsn > PEDCA_DSAIFS_REDUCTION) ? (edcaAifsn - PEDCA_DSAIFS_REDUCTION)
                                                      : edcaAifsn;
             pedca << Simulator::Now().GetSeconds()
-                  << "s [UHR][VO] m_ssrc >= QSRC (P-EDCA selected), EDCA_AIFSN="
+                  << "s [UHR][VO] trigger >= QSRC (P-EDCA selected), EDCA_AIFSN="
                   << +edcaAifsn << ", DSAIFSN=" << +dsaifsn << ", CTS_backoff=0";
             PedcaFileLog(pedca.str());
             GenerateUhrVoBackoff(linkId);
@@ -514,6 +625,7 @@ QosTxop::GenerateUhrVoBackoff(uint8_t linkId)
 {
     auto& link = GetLink(linkId);
     link.pedcaCtsPending = true;
+    RecordPedcaCtsAttempt(linkId);
     // CTS-to-self is attempted as soon as medium is idle for DSAIFS.
     constexpr uint32_t backoff = 0;
     m_backoffTrace(backoff, linkId);

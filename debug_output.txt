@@ -1,0 +1,22 @@
+==========================================================
+ Starting Fairness Experiment
+ Configuration: 1 P-EDCA STAs, 9 EDCA STAs, 30.0 sec
+==========================================================
+
+----------------------------------------------------------
+ Running Scenario 1: P-EDCA uses both links (Unfair)
+----------------------------------------------------------
+/usr/bin/env: ‘python3’: No such file or directory
+
+----------------------------------------------------------
+ Running Scenario 2: P-EDCA restricted to 1 link (Fair)
+----------------------------------------------------------
+/usr/bin/env: ‘python3’: No such file or directory
+
+==========================================================
+ Generating Gnuplot Comparison Scripts...
+==========================================================
+Gnuplot is not installed.
+Run: gnuplot results/compare_scenarios.plt once installed.
+All tasks finished successfully!
+Total execution time: 0 minutes and 0 seconds.

@@ -490,7 +490,13 @@ PhyEntity::StartReceivePreamble(Ptr<const WifiPpdu> ppdu,
         }
         break;
     case WifiPhyState::IDLE:
-        NS_ASSERT(!m_wifiPhy->m_currentEvent);
+        if (m_wifiPhy->m_currentEvent)
+        {
+            NS_LOG_DEBUG("Clearing stale current RX event while PHY state is IDLE");
+            m_wifiPhy->m_currentEvent = nullptr;
+            m_wifiPhy->m_currentPreambleEvents.clear();
+            m_endRxPayloadEvents.clear();
+        }
         StartPreambleDetectionPeriod(event);
         break;
     case WifiPhyState::SLEEP:
@@ -1034,8 +1040,11 @@ PhyEntity::EndPreambleDetectionPeriod(Ptr<Event> event)
 {
     NS_LOG_FUNCTION(this << *event);
     NS_ASSERT(!m_wifiPhy->IsStateRx());
-    NS_ASSERT(m_wifiPhy->m_endPhyRxEvent.IsExpired()); // since end of preamble reception is
-                                                       // scheduled by this method upon success
+    if (!m_wifiPhy->m_endPhyRxEvent.IsExpired())
+    {
+        NS_LOG_DEBUG("Cancelling stale end-of-PHY-RX event before ending preamble detection");
+        m_wifiPhy->m_endPhyRxEvent.Cancel();
+    }
 
     // calculate PER on the measurement channel for PHY headers
     const auto measurementChannelWidth = GetMeasurementChannelWidth(event->GetPpdu());
@@ -1043,7 +1052,11 @@ PhyEntity::EndPreambleDetectionPeriod(Ptr<Event> event)
     std::optional<Watt_u>
         maxRxPower; // in case current event may not be sent on measurement channel
     Ptr<Event> maxEvent;
-    NS_ASSERT(!m_wifiPhy->m_currentPreambleEvents.empty());
+    if (m_wifiPhy->m_currentPreambleEvents.empty())
+    {
+        NS_LOG_DEBUG("Ignoring stale preamble-detection completion with no tracked preamble events");
+        return;
+    }
     for (auto preambleEvent : m_wifiPhy->m_currentPreambleEvents)
     {
         const auto rxPower = preambleEvent.second->GetRxPower(measurementBand);

@@ -502,6 +502,23 @@ class QosTxop : public Txop
      * @param linkId the given link ID
      */
     void IncrementPsrcCount(uint8_t linkId);
+    void IncrementPedcaTriggerCount(uint8_t linkId);
+    uint32_t GetPedcaTriggerCount(uint8_t linkId) const;
+    uint32_t GetPedcaMaxTriggerCount(uint8_t linkId) const;
+
+    void RecordPedcaSelection(uint8_t linkId);
+    void RecordPedcaCtsAttempt(uint8_t linkId);
+    void RecordPedcaSuccess(uint8_t linkId);
+    void RecordPedcaFailure(uint8_t linkId);
+    void RecordPedcaReset(uint8_t linkId);
+    void RecordPedcaEligibilityCheck(uint8_t linkId, uint32_t triggerCount);
+
+    uint32_t GetPedcaSelectionCount(uint8_t linkId) const;
+    uint32_t GetPedcaCtsAttemptCount(uint8_t linkId) const;
+    uint32_t GetPedcaSuccessCount(uint8_t linkId) const;
+    uint32_t GetPedcaFailureCount(uint8_t linkId) const;
+    uint32_t GetPedcaResetCount(uint8_t linkId) const;
+    uint32_t GetPedcaEligibilityCheckCount(uint8_t linkId) const;
 
   protected:
     /**
@@ -517,10 +534,18 @@ class QosTxop : public Txop
         std::optional<Time> startTxop; //!< the start TXOP time
         Time txopDuration{0};          //!< the duration of a TXOP
         uint32_t psrc{0};              //!< P-EDCA short retry counter (PSRC)
+        uint32_t pedcaTriggerCount{0}; //!< failures accumulated to trigger P-EDCA
         bool pedcaCtsPending{false};   //!< whether a P-EDCA CTS-to-self is pending
         bool pedcaMode{false};         //!< whether P-EDCA mode is active
         bool pedcaAfterCts{false};     //!< whether EDCA contention after CTS is in progress
         bool pedcaResetOnNextTxop{false}; //!< reset P-EDCA counters on next TXOP start
+        uint32_t pedcaSelections{0};   //!< number of times P-EDCA was selected
+        uint32_t pedcaCtsAttempts{0};  //!< number of P-EDCA CTS-to-self attempts
+        uint32_t pedcaSuccesses{0};    //!< number of successful P-EDCA data exchanges
+        uint32_t pedcaFailures{0};     //!< number of failed P-EDCA data exchanges
+        uint32_t pedcaResets{0};       //!< number of P-EDCA resets
+        uint32_t pedcaEligibilityChecks{0}; //!< number of UHR VO checks at GenerateBackoff
+        uint32_t pedcaMaxTriggerCount{0};   //!< max trigger count observed for this link
         uint32_t muCwMin{0};           //!< the MU CW minimum
         uint32_t muCwMax{0};           //!< the MU CW maximum
         uint8_t muAifsn{0};            //!< the MU AIFSN
@@ -549,8 +574,6 @@ class QosTxop : public Txop
     QosLinkEntity& GetLink(uint8_t linkId) const;
 
   private:
-    static constexpr uint32_t QSRC_THRESHOLD = 2;
-    static constexpr uint32_t PSRC_THRESHOLD = 2;
     static constexpr uint8_t PEDCA_DSAIFS_REDUCTION = 1;
 
     /// allow AggregationCapableTransmissionListener class access
@@ -585,6 +608,8 @@ class QosTxop : public Txop
                                               //!< time
     bool m_enableUhrPedca{true}; //!< enable UHR VO P-EDCA behavior
     bool m_distributePedcaAcrossLinks{false}; //!< split P-EDCA attempts across links by STA
+    uint32_t m_qsrcThreshold{2}; //!< retry threshold for entering P-EDCA
+    uint32_t m_psrcThreshold{2}; //!< P-EDCA retry threshold before reset
     bool m_randomTxopLimitEnabled{false}; //!< randomize TXOP limit on each contention win
     Time m_randomTxopLimitMin{MicroSeconds(1500)};
     Time m_randomTxopLimitMax{MicroSeconds(5000)};
