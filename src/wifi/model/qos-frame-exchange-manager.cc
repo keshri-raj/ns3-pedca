@@ -326,6 +326,11 @@ QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
     cts.SetDuration(GetCtsToSelfDurationId(ctsTxVector, edcaDeferWindow, Seconds(0)));
     ForwardMpduDown(Create<WifiMpdu>(Create<Packet>(), cts), ctsTxVector);
 
+    // Count each P-EDCA CTS-to-self attempt toward the PSRC budget so repeated
+    // protected retries eventually fall back to plain EDCA if they do not lead
+    // to a successful protected data exchange.
+    edca->IncrementPsrcCount(m_linkId);
+
     const auto ctsDuration =
         WifiPhy::CalculateTxDuration(GetCtsSize(), ctsTxVector, m_phy->GetPhyBand());
     // After CTS-to-self, re-contend once using normal EDCA to attempt data transmission.
@@ -338,7 +343,8 @@ QosFrameExchangeManager::SendPedcaCtsAndRecontend(Ptr<QosTxop> edca)
     });
     std::ostringstream ctsLog;
     ctsLog << Simulator::Now().GetSeconds()
-           << "s [PEDCA][VO] CTS-to-self sent; re-contend with EDCA for data attempt"
+           << "s [PEDCA][VO] CTS-to-self sent; increment psrc=" << edca->GetPsrcCount(m_linkId)
+           << ", re-contend with EDCA for data attempt"
            << " (EDCA_AIFSN=" << +edca->GetEdcaAifsn(m_linkId) << ")";
     PedcaFileLog(ctsLog.str());
     return true;
@@ -742,12 +748,12 @@ QosFrameExchangeManager::TransmissionFailed(bool forceCurrentCw)
     if (m_edca->IsPedcaMode(m_linkId))
     {
         m_edca->SetPedcaAfterCts(m_linkId, false);
-        m_edca->IncrementPsrcCount(m_linkId);
         m_edca->RecordPedcaFailure(m_linkId);
         std::ostringstream failLog;
         failLog << Simulator::Now().GetSeconds()
-                << "s [PEDCA][VO] data exchange failed; increment psrc="
-                << m_edca->GetPsrcCount(m_linkId);
+                << "s [PEDCA][VO] data exchange failed; keep psrc="
+                << m_edca->GetPsrcCount(m_linkId)
+                << " and retry CTS-to-self if still below threshold";
         PedcaFileLog(failLog.str());
     }
     else

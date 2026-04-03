@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,7 +28,7 @@
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("UhrMldAp10ClientsVoTcp");
+NS_LOG_COMPONENT_DEFINE("UhrMldMixedPedca");
 
 namespace
 {
@@ -61,6 +62,243 @@ const std::array<AcTrafficSpec, 4> kAcTrafficSpecs = {{{"BK", 0x20},
                                                        {"VI", 0x88},
                                                        {"VO", 0xb8}}};
 constexpr std::size_t kVoAcIndex = 3;
+
+struct DynamicTrafficFlowSpec
+{
+    const char* name;
+    uint8_t tos;
+    double rateMbps;
+    Ipv4Address remoteAddress;
+    uint16_t remotePort;
+};
+
+double
+GetTrafficWeight(const std::string& name)
+{
+    if (name == "BE")
+    {
+        return 0.08;
+    }
+    if (name == "BK")
+    {
+        return 0.02;
+    }
+    if (name == "VI")
+    {
+        return 0.10;
+    }
+    if (name == "VO")
+    {
+        return 0.80;
+    }
+    return 1.0;
+}
+
+class DynamicTrafficClientApp : public Application
+{
+  public:
+    static TypeId GetTypeId();
+
+    DynamicTrafficClientApp(std::vector<DynamicTrafficFlowSpec> flows,
+                            TypeId socketTypeId,
+                            uint32_t packetSize,
+                            uint32_t maxBytesPerFlow,
+                            double meanProfileMs,
+                            double probabilityTwoFlows)
+        : m_flows(std::move(flows)),
+          m_socketTypeId(socketTypeId),
+          m_packetSize(packetSize),
+          m_maxBytesPerFlow(maxBytesPerFlow),
+          m_meanProfileMs(meanProfileMs),
+          m_probabilityTwoFlows(probabilityTwoFlows)
+    {
+    }
+
+  private:
+    void StartApplication() override;
+    void StopApplication() override;
+    void ChangeProfile();
+    void ActivateFlow(uint32_t flowIdx);
+    void ScheduleNextPacket(uint32_t flowIdx);
+    void SendPacket(uint32_t flowIdx);
+    uint32_t PickFlow(int exclude = -1) const;
+
+    std::vector<DynamicTrafficFlowSpec> m_flows;
+    TypeId m_socketTypeId;
+    uint32_t m_packetSize;
+    uint32_t m_maxBytesPerFlow;
+    double m_meanProfileMs;
+    double m_probabilityTwoFlows;
+    std::vector<Ptr<Socket>> m_sockets;
+    std::vector<EventId> m_sendEvents;
+    std::vector<bool> m_isActive;
+    std::vector<uint64_t> m_sentBytes;
+    EventId m_profileEvent;
+    Ptr<UniformRandomVariable> m_uniform = CreateObject<UniformRandomVariable>();
+    Ptr<ExponentialRandomVariable> m_profileDurationRv = CreateObject<ExponentialRandomVariable>();
+};
+
+NS_OBJECT_ENSURE_REGISTERED(DynamicTrafficClientApp);
+
+TypeId
+DynamicTrafficClientApp::GetTypeId()
+{
+    static TypeId tid = TypeId("ns3::DynamicTrafficClientApp").SetParent<Application>();
+    return tid;
+}
+
+void
+DynamicTrafficClientApp::StartApplication()
+{
+    m_profileDurationRv->SetAttribute("Mean", DoubleValue(m_meanProfileMs));
+    m_sockets.resize(m_flows.size());
+    m_sendEvents.resize(m_flows.size());
+    m_isActive.assign(m_flows.size(), false);
+    m_sentBytes.assign(m_flows.size(), 0);
+
+    for (uint32_t flowIdx = 0; flowIdx < m_flows.size(); ++flowIdx)
+    {
+        auto socket = Socket::CreateSocket(GetNode(), m_socketTypeId);
+        socket->SetIpTos(m_flows[flowIdx].tos);
+        socket->Connect(
+            InetSocketAddress(m_flows[flowIdx].remoteAddress, m_flows[flowIdx].remotePort));
+        m_sockets[flowIdx] = socket;
+    }
+
+    ChangeProfile();
+}
+
+void
+DynamicTrafficClientApp::StopApplication()
+{
+    if (m_profileEvent.IsPending())
+    {
+        Simulator::Cancel(m_profileEvent);
+    }
+    for (uint32_t flowIdx = 0; flowIdx < m_sockets.size(); ++flowIdx)
+    {
+        if (m_sendEvents[flowIdx].IsPending())
+        {
+            Simulator::Cancel(m_sendEvents[flowIdx]);
+        }
+        if (m_sockets[flowIdx])
+        {
+            m_sockets[flowIdx]->Close();
+            m_sockets[flowIdx] = nullptr;
+        }
+    }
+}
+
+uint32_t
+DynamicTrafficClientApp::PickFlow(int exclude) const
+{
+    std::vector<double> weights(m_flows.size(), 0.0);
+    for (uint32_t flowIdx = 0; flowIdx < m_flows.size(); ++flowIdx)
+    {
+        if (static_cast<int>(flowIdx) == exclude)
+        {
+            continue;
+        }
+        weights[flowIdx] = GetTrafficWeight(m_flows[flowIdx].name);
+    }
+
+    const double total = std::accumulate(weights.begin(), weights.end(), 0.0);
+    if (total <= 0.0)
+    {
+        return 0;
+    }
+
+    const double sample = m_uniform->GetValue(0.0, total);
+    double running = 0.0;
+    for (uint32_t flowIdx = 0; flowIdx < weights.size(); ++flowIdx)
+    {
+        running += weights[flowIdx];
+        if (sample <= running)
+        {
+            return flowIdx;
+        }
+    }
+    return 0;
+}
+
+void
+DynamicTrafficClientApp::ChangeProfile()
+{
+    for (uint32_t flowIdx = 0; flowIdx < m_flows.size(); ++flowIdx)
+    {
+        m_isActive[flowIdx] = false;
+        if (m_sendEvents[flowIdx].IsPending())
+        {
+            Simulator::Cancel(m_sendEvents[flowIdx]);
+        }
+    }
+
+    const bool useTwoFlows =
+        (m_flows.size() > 1) && (m_uniform->GetValue() < m_probabilityTwoFlows);
+    const uint32_t primary = PickFlow();
+    ActivateFlow(primary);
+
+    if (useTwoFlows)
+    {
+        const uint32_t secondary = PickFlow(static_cast<int>(primary));
+        ActivateFlow(secondary);
+    }
+
+    m_profileEvent =
+        Simulator::Schedule(MilliSeconds(m_profileDurationRv->GetValue()),
+                            &DynamicTrafficClientApp::ChangeProfile,
+                            this);
+}
+
+void
+DynamicTrafficClientApp::ActivateFlow(uint32_t flowIdx)
+{
+    m_isActive[flowIdx] = true;
+    SendPacket(flowIdx);
+}
+
+void
+DynamicTrafficClientApp::ScheduleNextPacket(uint32_t flowIdx)
+{
+    const double intervalSeconds =
+        (m_packetSize * 8.0) / (m_flows[flowIdx].rateMbps * 1000000.0);
+    m_sendEvents[flowIdx] = Simulator::Schedule(Seconds(intervalSeconds),
+                                                &DynamicTrafficClientApp::SendPacket,
+                                                this,
+                                                flowIdx);
+}
+
+void
+DynamicTrafficClientApp::SendPacket(uint32_t flowIdx)
+{
+    if (!m_isActive[flowIdx] || !m_sockets[flowIdx])
+    {
+        return;
+    }
+
+    if (m_maxBytesPerFlow > 0 && m_sentBytes[flowIdx] >= m_maxBytesPerFlow)
+    {
+        return;
+    }
+
+    uint32_t bytesToSend = m_packetSize;
+    if (m_maxBytesPerFlow > 0)
+    {
+        bytesToSend =
+            std::min<uint32_t>(bytesToSend, m_maxBytesPerFlow - static_cast<uint32_t>(m_sentBytes[flowIdx]));
+    }
+    if (bytesToSend == 0)
+    {
+        return;
+    }
+
+    const auto sent = m_sockets[flowIdx]->Send(Create<Packet>(bytesToSend));
+    if (sent > 0)
+    {
+        m_sentBytes[flowIdx] += static_cast<uint64_t>(sent);
+    }
+    ScheduleNextPacket(flowIdx);
+}
 
 struct Percentiles
 {
@@ -329,8 +567,16 @@ main(int argc, char* argv[])
     uint32_t numEdcaStas = 5;
     uint32_t nLinks = 2;
     double simTime = 10.0;
-    double appStart = 1.0;
+    double appStart = 5.0;
+    double appStartSpread = 2.0;
+    double offeredLoadMbpsPerFlow = 2.0;
+    double beRateMbps = 2.0;
+    double bkRateMbps = 1.0;
+    double viRateMbps = 4.0;
+    double voRateMbps = 2.0;
+    double meanProfileMs = 250.0;
     uint32_t payloadSize = 1448;
+    uint32_t maxBytesPerFlow = 4 * 1024 * 1024;
     uint8_t ehtMcs = 7;
     uint16_t channelWidth = 80;
     uint32_t rtsCtsThreshold = 65535;
@@ -343,8 +589,12 @@ main(int argc, char* argv[])
     bool enablePedca = true;
     bool distributePedcaAcrossLinks = false;
     bool enableUl = true;
-    bool enableDl = true;
+    bool enableDl = false;
+    bool voOnlyTraffic = false;
+    bool useRateLimitedTraffic = true;
+    double probabilityTwoFlows = 0.15;
     uint32_t numPedcaStas = 5;
+    uint32_t pedcaSelectionSeed = 1;
     std::string pcapPrefix = "scratch/uhr-mld-mixed-pedca";
     std::string animFile = "scratch/uhr-mld-mixed-pedca.xml";
     std::string tailPrefix = "scratch/uhr-mld-mixed-pedca-tail";
@@ -355,7 +605,23 @@ main(int argc, char* argv[])
     cmd.AddValue("nLinks", "Number of links per MLD (1-2)", nLinks);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("appStart", "Application start time in seconds", appStart);
-    cmd.AddValue("payloadSize", "TCP payload size in bytes", payloadSize);
+    cmd.AddValue("appStartSpread",
+                 "Additional time window over which application starts are staggered",
+                 appStartSpread);
+    cmd.AddValue("offeredLoadMbpsPerFlow",
+                 "Offered application load in Mbps per flow when using rate-limited traffic",
+                 offeredLoadMbpsPerFlow);
+    cmd.AddValue("beRateMbps", "Per-STA offered load for AC_BE in Mbit/s", beRateMbps);
+    cmd.AddValue("bkRateMbps", "Per-STA offered load for AC_BK in Mbit/s", bkRateMbps);
+    cmd.AddValue("viRateMbps", "Per-STA offered load for AC_VI in Mbit/s", viRateMbps);
+    cmd.AddValue("voRateMbps", "Per-STA offered load for AC_VO in Mbit/s", voRateMbps);
+    cmd.AddValue("meanProfileMs",
+                 "Mean time before a node picks a new traffic profile in ms",
+                 meanProfileMs);
+    cmd.AddValue("payloadSize", "UDP payload size in bytes", payloadSize);
+    cmd.AddValue("maxBytesPerFlow",
+                 "Maximum bytes per UDP flow (0 means unlimited)",
+                 maxBytesPerFlow);
     cmd.AddValue("ehtMcs", "EHT/UHR MCS index", ehtMcs);
     cmd.AddValue("channelWidth", "Channel width in MHz", channelWidth);
     cmd.AddValue("rtsCtsThreshold", "RTS/CTS threshold in bytes", rtsCtsThreshold);
@@ -371,9 +637,21 @@ main(int argc, char* argv[])
     cmd.AddValue("distributePedcaAcrossLinks",
                  "For multi-link STAs, allow P-EDCA only on a designated STA link to distribute contention",
                  distributePedcaAcrossLinks);
-    cmd.AddValue("enableUl", "Enable UL TCP flows (STA -> AP)", enableUl);
-    cmd.AddValue("enableDl", "Enable DL TCP flows (AP -> STA)", enableDl);
+    cmd.AddValue("enableUl", "Enable UL UDP flows (STA -> AP)", enableUl);
+    cmd.AddValue("enableDl", "Enable DL UDP flows (AP -> STA)", enableDl);
+    cmd.AddValue("voOnlyTraffic",
+                 "If true, generate only VO traffic instead of BK/BE/VI/VO",
+                 voOnlyTraffic);
+    cmd.AddValue("useRateLimitedTraffic",
+                 "If true, use dynamic rate-limited UDP traffic instead of always-on UDP flows",
+                 useRateLimitedTraffic);
+    cmd.AddValue("probabilityTwoFlows",
+                 "Probability that a traffic profile activates two ACs instead of one",
+                 probabilityTwoFlows);
     cmd.AddValue("numPedcaStas", "Number of STAs configured as P-EDCA", numPedcaStas);
+    cmd.AddValue("pedcaSelectionSeed",
+                 "Seed used to shuffle which STA indices are configured as P-EDCA",
+                 pedcaSelectionSeed);
     cmd.AddValue("pcapPrefix", "PCAP prefix/path", pcapPrefix);
     cmd.AddValue("animFile", "NetAnim XML file path", animFile);
     cmd.AddValue("tailPrefix", "Prefix for tail-latency CSV/plot outputs", tailPrefix);
@@ -381,6 +659,24 @@ main(int argc, char* argv[])
     cmd.Parse(argc, argv);
 
     uint32_t nStas = numPedcaStas + numEdcaStas;
+    std::vector<uint32_t> pedcaStaOrder(nStas);
+    for (uint32_t i = 0; i < nStas; ++i)
+    {
+        pedcaStaOrder[i] = i;
+    }
+    std::mt19937 pedcaShuffle(pedcaSelectionSeed);
+    std::shuffle(pedcaStaOrder.begin(), pedcaStaOrder.end(), pedcaShuffle);
+    std::vector<bool> isPedcaSta(nStas, false);
+    std::vector<uint8_t> preferredPedcaLinkId(nStas, 0);
+    uint32_t pedcaAssignmentIndex = 0;
+    for (uint32_t i = 0; i < std::min(numPedcaStas, nStas); ++i)
+    {
+        const auto staIdx = pedcaStaOrder[i];
+        isPedcaSta[staIdx] = true;
+        preferredPedcaLinkId[staIdx] =
+            (nLinks > 0) ? static_cast<uint8_t>(pedcaAssignmentIndex % nLinks) : 0;
+        ++pedcaAssignmentIndex;
+    }
 
     std::ostringstream dirStream;
     dirStream << "results/pedca_" << numPedcaStas << "_edca_" << numEdcaStas
@@ -398,7 +694,6 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(splitStasAcrossLinks && nLinks != 2,
                     "splitStasAcrossLinks requires nLinks=2");
 
-    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(payloadSize));
     // P-EDCA settings applied per-STA below out of the loop
 
     NodeContainer staNodes;
@@ -482,15 +777,29 @@ main(int argc, char* argv[])
     if (enablePcap)
     {
         phy.EnablePcap(pcapPrefix + "-ap", apDevice.Get(0));
-        phy.EnablePcap(pcapPrefix + "-sta", staDevices);
+        // Capture only the AP and one P-EDCA STA to keep the trace set small enough
+        // to inspect CTS-to-self behavior in Wireshark.
+        for (uint32_t i = 0; i < nStas; ++i)
+        {
+            if (isPedcaSta[i])
+            {
+                phy.EnablePcap(pcapPrefix + "-pedca-sta", staDevices.Get(i));
+                break;
+            }
+        }
     }
 
     MobilityHelper mobility;
     Ptr<ListPositionAllocator> pos = CreateObject<ListPositionAllocator>();
     pos->Add(Vector(0.0, 0.0, 0.0));
+    // Place all STAs on a small circle around the AP so every node is at the
+    // same distance and throughput differences are not caused by path loss.
+    const double staRadius = 4.0;
+    const double twoPi = 2.0 * std::acos(-1.0);
     for (uint32_t i = 0; i < nStas; ++i)
     {
-        pos->Add(Vector(3.0 + 2.0 * i, 2.0 + i, 0.0));
+        const double angle = twoPi * static_cast<double>(i) / static_cast<double>(nStas);
+        pos->Add(Vector(staRadius * std::cos(angle), staRadius * std::sin(angle), 0.0));
     }
     mobility.SetPositionAllocator(pos);
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
@@ -534,32 +843,66 @@ main(int argc, char* argv[])
     }
 
     ApplicationContainer sinkApps;
-    ApplicationContainer sourceApps;
     ApplicationContainer dlSinkApps;
-    ApplicationContainer dlSourceApps;
     std::vector<uint32_t> ulSinkStaIndex;
-    for (uint32_t i = 0; i < nStas; ++i)
+    std::vector<std::size_t> ulSinkAcIndex;
+    std::vector<std::size_t> activeAcIndices;
+    ApplicationContainer sourceApps;
+    ApplicationContainer dlSourceApps;
+    if (voOnlyTraffic)
+    {
+        activeAcIndices.push_back(kVoAcIndex);
+    }
+    else
     {
         for (std::size_t acIdx = 0; acIdx < kAcTrafficSpecs.size(); ++acIdx)
+        {
+            activeAcIndices.push_back(acIdx);
+        }
+    }
+
+    const auto getRateMbpsForAc = [&](std::size_t acIdx) {
+        switch (acIdx)
+        {
+        case 0:
+            return bkRateMbps;
+        case 1:
+            return beRateMbps;
+        case 2:
+            return viRateMbps;
+        case 3:
+            return voRateMbps;
+        default:
+            return offeredLoadMbpsPerFlow;
+        }
+    };
+
+    for (uint32_t i = 0; i < nStas; ++i)
+    {
+        const double staStartOffset =
+            (nStas > 1) ? (appStartSpread * static_cast<double>(i) / static_cast<double>(nStas - 1))
+                        : 0.0;
+        std::vector<DynamicTrafficFlowSpec> ulFlows;
+        std::vector<DynamicTrafficFlowSpec> dlFlows;
+        for (const auto acIdx : activeAcIndices)
         {
             const uint16_t port = static_cast<uint16_t>(7000 + i * kAcTrafficSpecs.size() + acIdx);
             if (enableUl)
             {
                 Address sinkAddr(InetSocketAddress(Ipv4Address::GetAny(), port));
-                PacketSinkHelper sinkHelper("ns3::TcpSocketFactory", sinkAddr);
+                PacketSinkHelper sinkHelper("ns3::UdpSocketFactory", sinkAddr);
                 auto sink = sinkHelper.Install(apNode.Get(0));
                 sink.Start(Seconds(0.0));
                 sink.Stop(Seconds(simTime));
                 sinkApps.Add(sink);
                 ulSinkStaIndex.push_back(i);
+                ulSinkAcIndex.push_back(acIdx);
 
-                BulkSendHelper sourceHelper("ns3::TcpSocketFactory", InetSocketAddress(apAddr, port));
-                sourceHelper.SetAttribute("MaxBytes", UintegerValue(0));
-                sourceHelper.SetAttribute("Tos", UintegerValue(kAcTrafficSpecs[acIdx].tos));
-                auto src = sourceHelper.Install(staNodes.Get(i));
-                src.Start(Seconds(appStart));
-                src.Stop(Seconds(simTime));
-                sourceApps.Add(src);
+                ulFlows.push_back({kAcTrafficSpecs[acIdx].name,
+                                   kAcTrafficSpecs[acIdx].tos,
+                                   getRateMbpsForAc(acIdx),
+                                   apAddr,
+                                   port});
             }
 
             if (enableDl)
@@ -567,20 +910,102 @@ main(int argc, char* argv[])
                 const uint16_t dlPort =
                     static_cast<uint16_t>(8000 + i * kAcTrafficSpecs.size() + acIdx);
                 Address dlSinkAddr(InetSocketAddress(Ipv4Address::GetAny(), dlPort));
-                PacketSinkHelper dlSinkHelper("ns3::TcpSocketFactory", dlSinkAddr);
+                PacketSinkHelper dlSinkHelper("ns3::UdpSocketFactory", dlSinkAddr);
                 auto dlSink = dlSinkHelper.Install(staNodes.Get(i));
                 dlSink.Start(Seconds(0.0));
                 dlSink.Stop(Seconds(simTime));
                 dlSinkApps.Add(dlSink);
 
-                BulkSendHelper dlSourceHelper("ns3::TcpSocketFactory",
-                                              InetSocketAddress(ifaces.GetAddress(i + 1), dlPort));
-                dlSourceHelper.SetAttribute("MaxBytes", UintegerValue(0));
-                dlSourceHelper.SetAttribute("Tos", UintegerValue(kAcTrafficSpecs[acIdx].tos));
-                auto dlSrc = dlSourceHelper.Install(apNode.Get(0));
-                dlSrc.Start(Seconds(appStart));
-                dlSrc.Stop(Seconds(simTime));
-                dlSourceApps.Add(dlSrc);
+                dlFlows.push_back({kAcTrafficSpecs[acIdx].name,
+                                   kAcTrafficSpecs[acIdx].tos,
+                                   getRateMbpsForAc(acIdx),
+                                   ifaces.GetAddress(i + 1),
+                                   dlPort});
+            }
+        }
+
+        const double flowStart = std::min(simTime - 0.05, appStart + staStartOffset);
+        if (enableUl)
+        {
+            if (useRateLimitedTraffic)
+            {
+                auto app = CreateObject<DynamicTrafficClientApp>(ulFlows,
+                                                                 UdpSocketFactory::GetTypeId(),
+                                                                 payloadSize,
+                                                                 maxBytesPerFlow,
+                                                                 meanProfileMs,
+                                                                 probabilityTwoFlows);
+                staNodes.Get(i)->AddApplication(app);
+                app->SetStartTime(Seconds(flowStart));
+                app->SetStopTime(Seconds(simTime));
+                sourceApps.Add(app);
+            }
+            else
+            {
+                for (const auto& flow : ulFlows)
+                {
+                    OnOffHelper sourceHelper("ns3::UdpSocketFactory",
+                                             InetSocketAddress(flow.remoteAddress,
+                                                               flow.remotePort));
+                    sourceHelper.SetAttribute("DataRate",
+                                              DataRateValue(DataRate(std::to_string(flow.rateMbps) +
+                                                                     "Mbps")));
+                    sourceHelper.SetAttribute("PacketSize", UintegerValue(payloadSize));
+                    sourceHelper.SetAttribute("MaxBytes", UintegerValue(maxBytesPerFlow));
+                    sourceHelper.SetAttribute("Tos", UintegerValue(flow.tos));
+                    sourceHelper.SetAttribute(
+                        "OnTime",
+                        StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+                    sourceHelper.SetAttribute(
+                        "OffTime",
+                        StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+                    auto src = sourceHelper.Install(staNodes.Get(i));
+                    src.Start(Seconds(flowStart));
+                    src.Stop(Seconds(simTime));
+                    sourceApps.Add(src);
+                }
+            }
+        }
+
+        if (enableDl)
+        {
+            if (useRateLimitedTraffic)
+            {
+                auto app = CreateObject<DynamicTrafficClientApp>(dlFlows,
+                                                                 UdpSocketFactory::GetTypeId(),
+                                                                 payloadSize,
+                                                                 maxBytesPerFlow,
+                                                                 meanProfileMs,
+                                                                 probabilityTwoFlows);
+                apNode.Get(0)->AddApplication(app);
+                app->SetStartTime(Seconds(flowStart));
+                app->SetStopTime(Seconds(simTime));
+                dlSourceApps.Add(app);
+            }
+            else
+            {
+                for (const auto& flow : dlFlows)
+                {
+                    OnOffHelper dlSourceHelper("ns3::UdpSocketFactory",
+                                               InetSocketAddress(flow.remoteAddress,
+                                                                 flow.remotePort));
+                    dlSourceHelper.SetAttribute("DataRate",
+                                                DataRateValue(DataRate(std::to_string(flow.rateMbps) +
+                                                                       "Mbps")));
+                    dlSourceHelper.SetAttribute("PacketSize", UintegerValue(payloadSize));
+                    dlSourceHelper.SetAttribute("MaxBytes", UintegerValue(maxBytesPerFlow));
+                    dlSourceHelper.SetAttribute("Tos", UintegerValue(flow.tos));
+                    dlSourceHelper.SetAttribute(
+                        "OnTime",
+                        StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+                    dlSourceHelper.SetAttribute(
+                        "OffTime",
+                        StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+                    auto src = dlSourceHelper.Install(apNode.Get(0));
+                    src.Start(Seconds(flowStart));
+                    src.Stop(Seconds(simTime));
+                    dlSourceApps.Add(src);
+                }
             }
         }
     }
@@ -598,9 +1023,10 @@ main(int argc, char* argv[])
         auto voQueue = voTxop->GetWifiMacQueue();
         NS_ABORT_MSG_IF(!voQueue, "Expected VO WifiMacQueue");
 
-        bool isPedca = (i < numPedcaStas) && enablePedca;
+        bool isPedca = isPedcaSta[i] && enablePedca;
         voTxop->SetAttribute("EnableUhrPedca", BooleanValue(isPedca));
         voTxop->SetAttribute("DistributePedcaAcrossLinks", BooleanValue(distributePedcaAcrossLinks));
+        voTxop->SetAttribute("PreferredPedcaLinkId", UintegerValue(preferredPedcaLinkId[i]));
         voTxop->SetAttribute("QsrcThreshold", UintegerValue(qsrcThreshold));
         voTxop->SetAttribute("PsrcThreshold", UintegerValue(psrcThreshold));
 
@@ -693,16 +1119,28 @@ main(int argc, char* argv[])
     uint64_t totalRx = 0;
     uint64_t totalDlRx = 0;
     uint64_t pedcaRx = 0, edcaRx = 0;
+    uint64_t voTotalRx = 0;
+    uint64_t pedcaVoRx = 0, edcaVoRx = 0;
+    uint32_t pedcaStaCount = 0;
+    uint32_t edcaStaCount = 0;
     double sumRx = 0.0, sumSqRx = 0.0;
     std::vector<uint64_t> ulRxBySta(nStas, 0);
+    std::vector<uint64_t> ulVoRxBySta(nStas, 0);
+    const double active = std::max(0.001, simTime - appStart);
     
     for (uint32_t i = 0; i < sinkApps.GetN(); ++i)
     {
         auto sink = DynamicCast<PacketSink>(sinkApps.Get(i));
         const uint64_t rx = sink->GetTotalRx();
         const auto staIdx = ulSinkStaIndex.at(i);
+        const auto acIdx = ulSinkAcIndex.at(i);
         totalRx += rx;
         ulRxBySta[staIdx] += rx;
+        if (acIdx == kVoAcIndex)
+        {
+            voTotalRx += rx;
+            ulVoRxBySta[staIdx] += rx;
+        }
     }
     for (uint32_t i = 0; i < dlSinkApps.GetN(); ++i)
     {
@@ -714,13 +1152,17 @@ main(int argc, char* argv[])
     {
         const uint64_t rx = ulRxBySta[i];
 
-        if (i < numPedcaStas)
+        if (isPedcaSta[i])
         {
+            ++pedcaStaCount;
             pedcaRx += rx;
+            pedcaVoRx += ulVoRxBySta[i];
         }
         else
         {
+            ++edcaStaCount;
             edcaRx += rx;
+            edcaVoRx += ulVoRxBySta[i];
         }
 
         const double rxd = static_cast<double>(rx);
@@ -728,13 +1170,24 @@ main(int argc, char* argv[])
         sumSqRx += (rxd * rxd);
 
         std::cout << "STA-" << i << " -> AP bytes: " << rx
-                  << (i < numPedcaStas ? " (P-EDCA)" : " (EDCA)") << "\n";
+                  << (isPedcaSta[i] ? " (P-EDCA)" : " (EDCA)") << "\n";
+        std::cout << "  STA-" << i << " VO bytes: " << ulVoRxBySta[i]
+                  << (isPedcaSta[i] ? " (P-EDCA)" : " (EDCA)") << "\n";
+        std::cout << "  STA-" << i << " VO throughput: "
+                  << (ulVoRxBySta[i] * 8.0) / (active * 1e6) << " Mbit/s"
+                  << (isPedcaSta[i] ? " (P-EDCA)" : " (EDCA)") << "\n";
     }
 
-    const double active = std::max(0.001, simTime - appStart);
     const double throughputMbps = (totalRx * 8.0) / (active * 1e6);
     const double pedcaThroughputMbps = (pedcaRx * 8.0) / (active * 1e6);
     const double edcaThroughputMbps = (edcaRx * 8.0) / (active * 1e6);
+    const double voThroughputMbps = (voTotalRx * 8.0) / (active * 1e6);
+    const double pedcaVoThroughputMbps = (pedcaVoRx * 8.0) / (active * 1e6);
+    const double edcaVoThroughputMbps = (edcaVoRx * 8.0) / (active * 1e6);
+    const double avgPedcaVoThroughputPerStaMbps =
+        (pedcaStaCount > 0) ? pedcaVoThroughputMbps / static_cast<double>(pedcaStaCount) : 0.0;
+    const double avgEdcaVoThroughputPerStaMbps =
+        (edcaStaCount > 0) ? edcaVoThroughputMbps / static_cast<double>(edcaStaCount) : 0.0;
     const double dlThroughputMbps = (totalDlRx * 8.0) / (active * 1e6);
     const double jfi = (nStas > 0 && sumSqRx > 0) ? (sumRx * sumRx) / (nStas * sumSqRx) : 0.0;
 
@@ -800,7 +1253,7 @@ main(int argc, char* argv[])
     for (const auto& [flowId, st] : flowMonitor->GetFlowStats())
     {
         const auto tuple = classifier->FindFlow(flowId);
-        if (tuple.protocol != 6)
+        if (tuple.protocol != 17)
         {
             continue;
         }
@@ -999,6 +1452,17 @@ main(int argc, char* argv[])
     summary << "psrc_threshold," << psrcThreshold << "\n";
     summary << "enable_ul," << (enableUl ? 1 : 0) << "\n";
     summary << "enable_dl," << (enableDl ? 1 : 0) << "\n";
+    summary << "vo_only_traffic," << (voOnlyTraffic ? 1 : 0) << "\n";
+    summary << "use_rate_limited_traffic," << (useRateLimitedTraffic ? 1 : 0) << "\n";
+    summary << "offered_load_mbps_per_flow," << offeredLoadMbpsPerFlow << "\n";
+    summary << "bk_rate_mbps," << bkRateMbps << "\n";
+    summary << "be_rate_mbps," << beRateMbps << "\n";
+    summary << "vi_rate_mbps," << viRateMbps << "\n";
+    summary << "vo_rate_mbps," << voRateMbps << "\n";
+    summary << "mean_profile_ms," << meanProfileMs << "\n";
+    summary << "probability_two_flows," << probabilityTwoFlows << "\n";
+    summary << "max_bytes_per_flow," << maxBytesPerFlow << "\n";
+    summary << "app_start_spread_s," << appStartSpread << "\n";
     summary << "stas_link0_target," << (splitStasAcrossLinks ? (nStas / 2) : nStas) << "\n";
     summary << "stas_link1_target," << (splitStasAcrossLinks ? (nStas - nStas / 2) : 0) << "\n";
     summary << "flows_considered," << flowCompletionMs.size() << "\n";
@@ -1006,6 +1470,15 @@ main(int argc, char* argv[])
     summary << "aggregate_throughput_mbps," << throughputMbps << "\n";
     summary << "pedca_throughput_mbps," << pedcaThroughputMbps << "\n";
     summary << "edca_throughput_mbps," << edcaThroughputMbps << "\n";
+    summary << "vo_throughput_mbps," << voThroughputMbps << "\n";
+    summary << "pedca_vo_throughput_mbps," << pedcaVoThroughputMbps << "\n";
+    summary << "edca_vo_throughput_mbps," << edcaVoThroughputMbps << "\n";
+    summary << "pedca_sta_count," << pedcaStaCount << "\n";
+    summary << "edca_sta_count," << edcaStaCount << "\n";
+    summary << "pedca_vo_rx_bytes," << pedcaVoRx << "\n";
+    summary << "edca_vo_rx_bytes," << edcaVoRx << "\n";
+    summary << "avg_pedca_vo_throughput_per_sta_mbps," << avgPedcaVoThroughputPerStaMbps << "\n";
+    summary << "avg_edca_vo_throughput_per_sta_mbps," << avgEdcaVoThroughputPerStaMbps << "\n";
     summary << "jfi," << jfi << "\n";
     summary << "dl_throughput_mbps," << dlThroughputMbps << "\n";
     summary << "delay_samples_present," << (totalDelaySamples > 0 ? 1 : 0) << "\n";
@@ -1155,7 +1628,7 @@ main(int argc, char* argv[])
         std::cout << "  WARNING: No DL channel access samples collected\n";
     }
 
-    std::cout << "UHR MLD AP + " << nStas << " MLD STAs TCP VO uplink summary\n";
+    std::cout << "UHR MLD AP + " << nStas << " MLD STAs UDP mixed-AC summary\n";
     std::cout << "  Links per MLD: " << nLinks << "\n";
     std::cout << "  AP IP: " << apAddr << "\n";
     std::cout << "  Data mode: " << dataMode << ", channel width: " << channelWidth << " MHz\n";
@@ -1163,6 +1636,7 @@ main(int argc, char* argv[])
     std::cout << "  P-EDCA thresholds (qsrc/psrc): " << qsrcThreshold << " / " << psrcThreshold
               << "\n";
     std::cout << "  P-EDCA enabled: " << (enablePedca ? "yes" : "no") << "\n";
+    std::cout << "  P-EDCA STA shuffle seed: " << pedcaSelectionSeed << "\n";
     std::cout << "  P-EDCA distribution across links: "
               << (distributePedcaAcrossLinks ? "yes" : "no") << "\n";
     std::cout << "  P-EDCA counters (select/cts/success/fail/reset): " << pedcaSelections << " / "
@@ -1175,11 +1649,39 @@ main(int argc, char* argv[])
         std::cout << "  STA link split target: link0=" << (nStas / 2)
                   << ", link1=" << (nStas - nStas / 2) << "\n";
     }
-    std::cout << "  AC mapping: BK=0x20, BE=0x00, VI=0x88, VO=0xb8\n";
+    if (voOnlyTraffic)
+    {
+        std::cout << "  AC mapping: VO only (TOS=0xb8)\n";
+    }
+    else
+    {
+        std::cout << "  AC mapping: BK=0x20, BE=0x00, VI=0x88, VO=0xb8\n";
+    }
+    std::cout << "  Max bytes per flow: " << maxBytesPerFlow << "\n";
+    std::cout << "  App start spread (s): " << appStartSpread << "\n";
+    std::cout << "  Rate-limited traffic: " << (useRateLimitedTraffic ? "yes" : "no") << "\n";
+    if (useRateLimitedTraffic)
+    {
+        std::cout << "  Dynamic traffic profile mean: " << meanProfileMs << " ms\n";
+        std::cout << "  Two-flow probability: " << probabilityTwoFlows << "\n";
+        std::cout << "  Offered load per AC (BK/BE/VI/VO): " << bkRateMbps << " / " << beRateMbps
+                  << " / " << viRateMbps << " / " << voRateMbps << " Mbps\n";
+    }
+    else
+    {
+        std::cout << "  Offered load per flow: " << offeredLoadMbpsPerFlow << " Mbps\n";
+    }
     std::cout << "  Total RX bytes at AP: " << totalRx << "\n";
     std::cout << "  Aggregate throughput: " << throughputMbps << " Mbit/s\n";
     std::cout << "  P-EDCA STAs throughput: " << pedcaThroughputMbps << " Mbit/s\n";
     std::cout << "  EDCA STAs throughput: " << edcaThroughputMbps << " Mbit/s\n";
+    std::cout << "  Total VO throughput: " << voThroughputMbps << " Mbit/s\n";
+    std::cout << "  P-EDCA VO throughput: " << pedcaVoThroughputMbps << " Mbit/s\n";
+    std::cout << "  EDCA VO throughput: " << edcaVoThroughputMbps << " Mbit/s\n";
+    std::cout << "  Avg P-EDCA VO throughput per STA: " << avgPedcaVoThroughputPerStaMbps
+              << " Mbit/s\n";
+    std::cout << "  Avg EDCA VO throughput per STA: " << avgEdcaVoThroughputPerStaMbps
+              << " Mbit/s\n";
     std::cout << "  Jain's Fairness Index (JFI): " << jfi << "\n";
     std::cout << "  Delay p95/p99/p99.9 (ms): " << delayPct.p95 << " / " << delayPct.p99 << " / "
               << delayPct.p999 << "\n";

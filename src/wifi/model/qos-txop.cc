@@ -109,10 +109,15 @@ QosTxop::GetTypeId()
             .AddAttribute(
                 "DistributePedcaAcrossLinks",
                 "If enabled for multi-link STA devices, P-EDCA is only attempted on one "
-                "designated link per STA (NodeId modulo number of links) to spread contention.",
+                "designated link per STA to spread contention.",
                 BooleanValue(false),
                 MakeBooleanAccessor(&QosTxop::m_distributePedcaAcrossLinks),
                 MakeBooleanChecker())
+            .AddAttribute("PreferredPedcaLinkId",
+                          "Preferred link ID to use when P-EDCA is restricted to one link.",
+                          UintegerValue(0),
+                          MakeUintegerAccessor(&QosTxop::m_preferredPedcaLinkId),
+                          MakeUintegerChecker<uint8_t>())
             .AddAttribute("QsrcThreshold",
                           "Retry threshold for entering P-EDCA.",
                           UintegerValue(2),
@@ -562,8 +567,7 @@ QosTxop::GenerateBackoff(uint8_t linkId)
     {
         if (m_distributePedcaAcrossLinks && m_mac->GetTypeOfStation() == STA && m_mac->GetNLinks() > 1)
         {
-            const auto node = m_mac->GetDevice()->GetNode();
-            const auto preferredLinkId = static_cast<uint8_t>(node->GetId() % m_mac->GetNLinks());
+            const auto preferredLinkId = static_cast<uint8_t>(m_preferredPedcaLinkId % m_mac->GetNLinks());
             if (linkId != preferredLinkId)
             {
                 auto& nonPreferred = GetLink(linkId);

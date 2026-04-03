@@ -1,0 +1,126 @@
+
+<style>
+.chart-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 2px; }
+.chart-sub { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 10px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--color-text-secondary); }
+.ld { width: 20px; height: 2px; display: inline-block; vertical-align: middle; margin-right: 5px; border-radius: 1px; }
+.lc { width: 8px; height: 8px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 5px; }
+</style>
+
+<div style="padding: 1rem 0; max-width: 600px;">
+  <div class="chart-title">Jain's Fairness Index (JFI)</div>
+  <div class="chart-sub">sorted by JFI gain for P-EDCA on one link</div>
+  <div style="position:relative;height:280px;"><canvas id="c1"></canvas></div>
+  <div class="legend">
+    <span><span class="ld" style="background:#3266ad"></span>P-EDCA on both link</span>
+    <span><span class="ld" style="background:#1D9E75"></span>P-EDCA on one link</span>
+    <span><span class="lc" style="background:rgba(29,158,117,0.35)"></span>improvement</span>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const raw = {
+  labels: ['1:9','10:10','15:15','2:18','3:27','3:7','5:5','6:14','9:21'],
+  d0: [0.959871,0.848920,0.813969,0.844347,0.856225,0.961441,0.962166,0.859395,0.798000],
+  d1: [0.959871,0.854923,0.723061,0.851417,0.858421,0.865412,0.865412,0.890896,0.801402]
+};
+
+const zipped = raw.labels.map((l,i) => ({ l, d0: raw.d0[i], d1: raw.d1[i] }));
+zipped.sort((a,b) => (a.d1 - a.d0) - (b.d1 - b.d0));
+const sorted = { labels: zipped.map(z=>z.l), d0: zipped.map(z=>z.d0), d1: zipped.map(z=>z.d1) };
+
+const gainFillPlugin = {
+  id: 'gainFill',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const d0ds = chart.data.datasets[0].data;
+    const d1ds = chart.data.datasets[1].data;
+    const meta0 = chart.getDatasetMeta(0);
+    const meta1 = chart.getDatasetMeta(1);
+    ctx.save();
+
+    const gainIdx = d0ds.map((_,i) => i).filter(i => d1ds[i] > d0ds[i]);
+    if (gainIdx.length) {
+      ctx.beginPath();
+      ctx.moveTo(meta0.data[gainIdx[0]].x, meta0.data[gainIdx[0]].y);
+      for (let i = 1; i < gainIdx.length; i++) ctx.lineTo(meta0.data[gainIdx[i]].x, meta0.data[gainIdx[i]].y);
+      for (let i = gainIdx.length-1; i >= 0; i--) ctx.lineTo(meta1.data[gainIdx[i]].x, meta1.data[gainIdx[i]].y);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(29,158,117,0.13)';
+      ctx.fill();
+    }
+
+    for (let i = 0; i < d0ds.length; i++) {
+      const p0 = meta0.data[i], p1 = meta1.data[i];
+      const diff = d1ds[i] - d0ds[i];
+      if (Math.abs(diff) < 0.0001) continue;
+      const midY = (p0.y + p1.y) / 2;
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.strokeStyle = diff > 0 ? 'rgba(29,158,117,0.5)' : 'rgba(229,89,52,0.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3,3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = diff > 0 ? '#085041' : '#A32D2D';
+      ctx.textAlign = 'center';
+      const sign = diff > 0 ? '+' : '';
+      ctx.fillText(sign + diff.toFixed(3), p0.x + 10, midY - 4);
+    }
+    ctx.restore();
+  }
+};
+
+new Chart(document.getElementById('c1'), {
+  type: 'line',
+  plugins: [gainFillPlugin],
+  data: {
+    labels: sorted.labels,
+    datasets: [
+      {
+        label: 'P-EDCA on both link', data: sorted.d0,
+        borderColor: '#3266ad', backgroundColor: '#3266ad',
+        pointBackgroundColor: '#3266ad', pointRadius: 3, pointHoverRadius: 5,
+        tension: 0.3, borderWidth: 2, fill: false
+      },
+      {
+        label: 'P-EDCA on one link', data: sorted.d1,
+        borderColor: '#1D9E75', backgroundColor: '#1D9E75',
+        pointBackgroundColor: '#1D9E75', pointRadius: 3, pointHoverRadius: 5,
+        tension: 0.3, borderWidth: 2, fill: false
+      }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(4),
+          afterBody: (items) => {
+            const i = items[0].dataIndex;
+            const d0 = items[0].chart.data.datasets[0].data[i];
+            const d1 = items[0].chart.data.datasets[1].data[i];
+            const diff = d1 - d0;
+            if (Math.abs(diff) < 0.0001) return [];
+            const sign = diff > 0 ? '+' : '';
+            return ['Change: ' + sign + diff.toFixed(4) + ' (' + (diff > 0 ? '+' : '') + Math.round(diff/d0*100) + '%)'];
+          }
+        }
+      }
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: '#888780', font: { size: 10 }, autoSkip: false, maxRotation: 45 } },
+      y: {
+        grid: { color: 'rgba(136,135,128,0.15)' },
+        ticks: { color: '#888780', font: { size: 10 }, callback: v => v.toFixed(2) },
+        min: 0.65, max: 1.0
+      }
+    }
+  }
+});
+</script>

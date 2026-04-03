@@ -1,0 +1,64 @@
+Outcome
+Experiment Setup:- 
+Current experiment setup:
+
+- topology
+  - 1 AP
+  - multi-link UHR STAs
+  - all STAs placed equidistant from the AP on a circle
+
+- traffic model
+  - `UDP`
+  - `UL only`
+  - mixed AC traffic, not VO-only
+  - dynamic traffic profiles per STA
+  - `VO` heavily dominant in profile selection
+
+- dynamic profile settings
+  - `appStart = 5`
+  - `appStartSpread = 2`
+  - `meanProfileMs = 250`
+  - `probabilityTwoFlows = 0.15`
+
+- current AC selection weights in [uhr-mld-mixed-pedca.cc](C:/ns-3/scratch/uhr-mld-mixed-pedca.cc)
+  - `BK = 0.02`
+  - `BE = 0.08`
+  - `VI = 0.10`
+  - `VO = 0.80`
+
+- PHY stress settings in [run_comparison.sh](C:/ns-3/run_comparison.sh)
+  - `EHT_MCS = 5`
+  - `CHANNEL_WIDTH = 20 MHz`
+
+- current offered-load settings in [run_comparison.sh](C:/ns-3/run_comparison.sh)
+  - mixed AC, VO-dominant
+  - scaled by total STA count
+
+- P-EDCA assignment
+  - P-EDCA STAs are randomized using a fixed seed
+  - `pedcaSelectionSeed = 7`
+
+- one-link distribution policy
+  - round-robin across only the selected P-EDCA STAs
+  - no longer based on node ID
+
+- current P-EDCA logic
+  - `QSRC` triggers entry into P-EDCA
+  - CTS-to-self is really transmitted
+  - `PSRC` increments only when CTS-to-self is sent
+  - failed P-EDCA data does not increment `PSRC`
+  - if still below threshold, the STA can try CTS-to-self again
+  - success resets P-EDCA counters
+
+- output/reporting
+  - total throughput by group
+  - VO throughput by group
+  - average VO throughput per P-EDCA STA
+  - average VO throughput per EDCA STA
+  - per-STA VO bytes and VO throughput
+  - MAC/tail metrics
+
+- PCAP
+  - if `enablePcap=true`, capture is generated for:
+    - AP
+    - one randomized P-EDCA STA only

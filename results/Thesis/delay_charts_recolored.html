@@ -1,0 +1,150 @@
+
+<style>
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; padding: 1rem 0; }
+.chart-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 2px; }
+.chart-sub { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 10px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--color-text-secondary); }
+.ld { width: 20px; height: 2px; display: inline-block; vertical-align: middle; margin-right: 5px; border-radius: 1px; }
+</style>
+
+<div class="grid">
+  <div>
+    <div class="chart-title">Delay P95</div>
+    <div class="chart-sub">grouped by client count · 10 / 20 / 30</div>
+    <div style="position:relative;height:240px;"><canvas id="c1"></canvas></div>
+    <div class="legend">
+      <span><span class="ld" style="background:#7F77DD"></span>P-EDCA on both link</span>
+      <span><span class="ld" style="background:#EF9F27"></span>P-EDCA on one link</span>
+    </div>
+  </div>
+  <div>
+    <div class="chart-title">Delay P99</div>
+    <div class="chart-sub">grouped by client count · 10 / 20 / 30</div>
+    <div style="position:relative;height:240px;"><canvas id="c2"></canvas></div>
+    <div class="legend">
+      <span><span class="ld" style="background:#7F77DD"></span>P-EDCA on both link</span>
+      <span><span class="ld" style="background:#EF9F27"></span>P-EDCA on one link</span>
+    </div>
+  </div>
+  <div>
+    <div class="chart-title">VO Delay P95</div>
+    <div class="chart-sub">grouped by client count · 10 / 20 / 30</div>
+    <div style="position:relative;height:240px;"><canvas id="c3"></canvas></div>
+    <div class="legend">
+      <span><span class="ld" style="background:#7F77DD"></span>P-EDCA on both link</span>
+      <span><span class="ld" style="background:#EF9F27"></span>P-EDCA on one link</span>
+    </div>
+  </div>
+  <div>
+    <div class="chart-title">VO Delay P99</div>
+    <div class="chart-sub">grouped by client count · 10 / 20 / 30</div>
+    <div style="position:relative;height:240px;"><canvas id="c4"></canvas></div>
+    <div class="legend">
+      <span><span class="ld" style="background:#7F77DD"></span>P-EDCA on both link</span>
+      <span><span class="ld" style="background:#EF9F27"></span>P-EDCA on one link</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const labels = ['1:9','3:7','5:5','2:18','6:14','10:10','3:27','9:21','15:15'];
+const data = {
+  p95:   { d0: [417,419,448,496,491,499,118,558,577], d1: [417,87,87,495,498,486,120,569,529] },
+  p99:   { d0: [479,481,496,602,581,596,178,810,712], d1: [479,131,131,604,585,563,189,690,654] },
+  vop95: { d0: [418,419,448,496,491,499,118,559,577], d1: [418,87,87,495,498,486,120,569,529] },
+  vop99: { d0: [479,481,496,602,581,596,177,811,712], d1: [479,130,130,604,586,563,187,690,654] },
+};
+
+const C0 = '#7F77DD';
+const C1 = '#EF9F27';
+
+function bandFillPlugin() {
+  return {
+    id: 'bandFill_' + Math.random(),
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      const d0ds = chart.data.datasets[0].data;
+      const d1ds = chart.data.datasets[1].data;
+      const meta0 = chart.getDatasetMeta(0);
+      const meta1 = chart.getDatasetMeta(1);
+      for (let i = 0; i < d0ds.length - 1; i++) {
+        const p0a = meta0.data[i], p0b = meta0.data[i+1];
+        const p1a = meta1.data[i], p1b = meta1.data[i+1];
+        const isGain = (d1ds[i] + d1ds[i+1]) < (d0ds[i] + d0ds[i+1]);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(p0a.x, p0a.y);
+        ctx.bezierCurveTo((p0a.x+p0b.x)/2, p0a.y, (p0a.x+p0b.x)/2, p0b.y, p0b.x, p0b.y);
+        ctx.lineTo(p1b.x, p1b.y);
+        ctx.bezierCurveTo((p1a.x+p1b.x)/2, p1b.y, (p1a.x+p1b.x)/2, p1a.y, p1a.x, p1a.y);
+        ctx.closePath();
+        ctx.fillStyle = isGain ? 'rgba(29,158,117,0.18)' : 'rgba(220,60,60,0.15)';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  };
+}
+
+function groupPlugin() {
+  return {
+    id: 'groupDiv_' + Math.random(),
+    afterDraw(chart) {
+      const { ctx, scales: { x, y } } = chart;
+      [2.5, 5.5].forEach(pos => {
+        const xPx = x.getPixelForValue(pos);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(xPx, y.top);
+        ctx.lineTo(xPx, y.bottom);
+        ctx.strokeStyle = 'rgba(136,135,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4,4]);
+        ctx.stroke();
+        ctx.restore();
+      });
+      [{ text: '10 clients', from: 0, to: 2 }, { text: '20 clients', from: 3, to: 5 }, { text: '30 clients', from: 6, to: 8 }].forEach(g => {
+        const midX = (x.getPixelForValue(g.from) + x.getPixelForValue(g.to)) / 2;
+        ctx.save();
+        ctx.font = '11px sans-serif';
+        ctx.fillStyle = 'rgba(136,135,128,0.65)';
+        ctx.textAlign = 'center';
+        ctx.fillText(g.text, midX, y.top - 6);
+        ctx.restore();
+      });
+    }
+  };
+}
+
+function makeChart(id, d0, d1) {
+  new Chart(document.getElementById(id), {
+    type: 'line',
+    plugins: [bandFillPlugin(), groupPlugin()],
+    data: {
+      labels,
+      datasets: [
+        { label: 'P-EDCA on both link', data: d0, borderColor: C0, backgroundColor: 'transparent', pointBackgroundColor: C0, pointBorderColor: C0, pointRadius: 3, pointHoverRadius: 5, tension: 0.4, borderWidth: 2, fill: false },
+        { label: 'P-EDCA on one link',  data: d1, borderColor: C1, backgroundColor: 'transparent', pointBackgroundColor: C1, pointBorderColor: C1, pointRadius: 3, pointHoverRadius: 5, tension: 0.4, borderWidth: 2, fill: false }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { top: 20 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + 'ms' } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#888780', font: { size: 10 }, autoSkip: false, maxRotation: 0 } },
+        y: { grid: { color: 'rgba(136,135,128,0.12)' }, ticks: { color: '#888780', font: { size: 10 }, callback: v => v + 'ms' }, min: 0 }
+      }
+    }
+  });
+}
+
+makeChart('c1', data.p95.d0,   data.p95.d1);
+makeChart('c2', data.p99.d0,   data.p99.d1);
+makeChart('c3', data.vop95.d0, data.vop95.d1);
+makeChart('c4', data.vop99.d0, data.vop99.d1);
+</script>

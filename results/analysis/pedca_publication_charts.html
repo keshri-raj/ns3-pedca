@@ -1,0 +1,226 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:var(--font-sans);}
+.page{padding:1.25rem 0;}
+.section{margin-bottom:2.5rem;}
+.sec-title{font-size:12px;font-weight:500;color:var(--color-text-secondary);letter-spacing:.06em;text-transform:uppercase;margin-bottom:1rem;padding-bottom:6px;border-bottom:0.5px solid var(--color-border-tertiary);}
+.card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:1rem;}
+.ctitle{font-size:13px;font-weight:500;color:var(--color-text-primary);margin-bottom:2px;}
+.csub{font-size:11px;color:var(--color-text-tertiary);margin-bottom:10px;}
+.legend{display:flex;gap:18px;font-size:11px;color:var(--color-text-secondary);margin-bottom:10px;flex-wrap:wrap;}
+.lsq{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;vertical-align:middle;}
+.lci{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle;}
+</style>
+
+<div class="page">
+
+<div class="section">
+  <div class="sec-title">Throughput</div>
+  <div class="card">
+    <div class="ctitle">Aggregate throughput (Mbit/s)</div>
+    <div class="csub">Total system throughput — both links vs single link</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+    </div>
+    <div style="position:relative;width:100%;height:380px;"><canvas id="agg"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="ctitle">P-EDCA throughput (Mbit/s)</div>
+    <div class="csub">Throughput attributed to P-EDCA stations only</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+    </div>
+    <div style="position:relative;width:100%;height:380px;"><canvas id="pedca"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="ctitle">EDCA throughput (Mbit/s)</div>
+    <div class="csub">Throughput attributed to EDCA stations only</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+    </div>
+    <div style="position:relative;width:100%;height:380px;"><canvas id="edca"></canvas></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="sec-title">Fairness</div>
+  <div class="card">
+    <div class="ctitle">Jain's Fairness Index</div>
+    <div class="csub">Dot plot — circle = Dist0, square = Dist1; colour of connecting line shows direction of change</div>
+    <div class="legend">
+      <span><span class="lci" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+      <span style="color:#1D9E75;">— improved</span>
+      <span style="color:#E24B4A;">— degraded</span>
+    </div>
+    <div id="jfi_chart" style="width:100%;"></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="sec-title">Latency</div>
+  <div class="card">
+    <div class="ctitle">VO delay p95 — change from both-links baseline (ms)</div>
+    <div class="csub">Bars show Dist1 − Dist0; negative = single link reduced delay (better), positive = increased delay (worse)</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#1D9E75;"></span>Delay reduced (single link better)</span>
+      <span><span class="lsq" style="background:#E24B4A;"></span>Delay increased (single link worse)</span>
+    </div>
+    <div style="position:relative;width:100%;height:380px;"><canvas id="delay_div"></canvas></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="sec-title">P-EDCA control stability</div>
+  <div class="card">
+    <div class="ctitle">P-EDCA failures</div>
+    <div class="csub">Paired horizontal bars sorted by Dist0 value — cases with most failures at top</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+    </div>
+    <div style="position:relative;width:100%;height:420px;"><canvas id="fail_h"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="ctitle">P-EDCA resets</div>
+    <div class="csub">Paired horizontal bars sorted by Dist0 value — cases with most resets at top</div>
+    <div class="legend">
+      <span><span class="lsq" style="background:#378ADD;"></span>Both links (Dist0)</span>
+      <span><span class="lsq" style="background:#1D9E75;"></span>Single link (Dist1)</span>
+    </div>
+    <div style="position:relative;width:100%;height:420px;"><canvas id="reset_h"></canvas></div>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const cases = ['1:9  20MHz','2:18  20MHz','3:7  20MHz','5:5  20MHz','6:14  20MHz','10:10  sat','3:27  40MHz','9:21  40MHz','15:15  40MHz'];
+
+const d0={
+  agg:   [43.894,43.954,43.447,43.329,44.362,44.478,72.856,89.980,88.360],
+  pedca: [4.970,4.812,11.860,20.098,14.899,26.893,5.822,32.604,46.327],
+  edca:  [38.925,39.142,31.587,23.231,29.463,17.585,67.034,57.376,42.034],
+  jfi:   [0.9599,0.8443,0.9614,0.9622,0.8594,0.8489,0.8562,0.7980,0.8140],
+  delay: [418,496,419,448,491,499,118,559,577],
+  fail:  [41,133,25,21,87,86,324,275,247],
+  resets:[2,3,4,6,9,22,16,51,67]
+};
+const d1={
+  agg:   [43.894,44.028,42.166,42.166,43.296,44.075,72.900,89.125,90.564],
+  pedca: [4.970,5.862,12.810,21.532,14.973,24.245,6.753,29.595,46.146],
+  edca:  [38.925,38.167,29.356,20.633,28.323,19.829,66.147,59.530,44.418],
+  jfi:   [0.9599,0.8514,0.8654,0.8654,0.8909,0.8549,0.8584,0.8014,0.7231],
+  delay: [418,495,87,87,498,486,120,569,529],
+  fail:  [41,130,31,24,82,91,288,212,177],
+  resets:[2,0,4,4,4,11,5,20,24]
+};
+
+const BLUE='#378ADD', TEAL='#1D9E75', RED='#E24B4A', GRAY='#B4B2A9';
+const BLUE_L='rgba(55,138,221,0.12)', TEAL_L='rgba(29,158,117,0.12)';
+
+const baseOpts=(ylabel)=>({
+  responsive:true, maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(2)}`}}},
+  scales:{
+    x:{ticks:{font:{size:10},maxRotation:38,autoSkip:false},grid:{display:false}},
+    y:{title:{display:true,text:ylabel,font:{size:11},color:GRAY},grid:{color:'rgba(128,128,128,0.08)'},ticks:{font:{size:10}}}
+  }
+});
+
+function grpBar(id, key, ylabel, ymin){
+  const opts=baseOpts(ylabel);
+  opts.scales.y.min=ymin;
+  new Chart(document.getElementById(id),{
+    type:'bar',
+    data:{labels:cases,datasets:[
+      {label:'Both links (Dist0)',data:d0[key],backgroundColor:BLUE,borderRadius:3,barPercentage:0.75},
+      {label:'Single link (Dist1)',data:d1[key],backgroundColor:TEAL,borderRadius:3,barPercentage:0.75}
+    ]},
+    options:opts
+  });
+}
+grpBar('agg','agg','Mbit/s',30);
+grpBar('pedca','pedca','Mbit/s',0);
+grpBar('edca','edca','Mbit/s',0);
+
+const delayDelta=d0.delay.map((v,i)=>+(d1.delay[i]-v).toFixed(1));
+const delayColors=delayDelta.map(v=>v<0?TEAL:v>0?RED:GRAY);
+const dOpts=baseOpts('Δ delay p95 (ms)');
+dOpts.plugins.tooltip.callbacks.label=c=>`${c.label}: ${c.parsed.y>0?'+':''}${c.parsed.y} ms`;
+dOpts.scales.y.min=-500; dOpts.scales.y.max=50;
+dOpts.plugins.annotation={};
+new Chart(document.getElementById('delay_div'),{
+  type:'bar',
+  data:{labels:cases,datasets:[{label:'Delay delta',data:delayDelta,backgroundColor:delayColors,borderRadius:3,barPercentage:0.6}]},
+  options:dOpts
+});
+
+function sortedHBar(id, key){
+  const idx=[...cases.keys()].sort((a,b)=>d0[key][b]-d0[key][a]);
+  const sortedLabels=idx.map(i=>cases[i]);
+  const sd0=idx.map(i=>d0[key][i]);
+  const sd1=idx.map(i=>d1[key][i]);
+  const n=sortedLabels.length;
+  new Chart(document.getElementById(id),{
+    type:'bar',
+    data:{labels:sortedLabels,datasets:[
+      {label:'Both links (Dist0)',data:sd0,backgroundColor:BLUE,borderRadius:3,barPercentage:0.7},
+      {label:'Single link (Dist1)',data:sd1,backgroundColor:TEAL,borderRadius:3,barPercentage:0.7}
+    ]},
+    options:{
+      indexAxis:'y',
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.x}`}}},
+      scales:{
+        x:{title:{display:true,text:'count',font:{size:11},color:GRAY},grid:{color:'rgba(128,128,128,0.08)'},ticks:{font:{size:10}}},
+        y:{ticks:{font:{size:10}},grid:{display:false}}
+      }
+    }
+  });
+}
+sortedHBar('fail_h','fail');
+sortedHBar('reset_h','resets');
+
+function buildJFI(){
+  const W=560, padL=115, padR=50, padT=24, rowH=44;
+  const n=cases.length;
+  const H=padT+n*rowH+20;
+  const minV=0.70, maxV=1.0;
+  const xs=v=>padL+(v-minV)/(maxV-minV)*(W-padL-padR);
+
+  const isDark=matchMedia('(prefers-color-scheme:dark)').matches;
+  const textCol=isDark?'#D3D1C7':'#5F5E5A';
+  const gridCol=isDark?'rgba(255,255,255,0.07)':'rgba(0,0,0,0.07)';
+
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg">`;
+  [0.70,0.75,0.80,0.85,0.90,0.95,1.00].forEach(v=>{
+    const x=xs(v);
+    s+=`<line x1="${x.toFixed(1)}" y1="${padT-6}" x2="${x.toFixed(1)}" y2="${H-16}" stroke="${gridCol}" stroke-width="1"/>`;
+    s+=`<text x="${x.toFixed(1)}" y="${padT-8}" text-anchor="middle" font-size="10" fill="${textCol}">${v.toFixed(2)}</text>`;
+  });
+
+  cases.forEach((lbl,i)=>{
+    const y=padT+i*rowH+rowH/2;
+    const x0=xs(d0.jfi[i]), x1=xs(d1.jfi[i]);
+    const diff=d1.jfi[i]-d0.jfi[i];
+    const lc=Math.abs(diff)<0.001?GRAY:diff>0?TEAL:RED;
+    s+=`<text x="${padL-10}" y="${y+4}" text-anchor="end" font-size="11" fill="${textCol}">${lbl}</text>`;
+    s+=`<line x1="${x0.toFixed(1)}" y1="${y}" x2="${x1.toFixed(1)}" y2="${y}" stroke="${lc}" stroke-width="2"/>`;
+    s+=`<circle cx="${x0.toFixed(1)}" cy="${y}" r="5.5" fill="${BLUE}"/>`;
+    s+=`<rect x="${(x1-4.5).toFixed(1)}" y="${(y-4.5).toFixed(1)}" width="9" height="9" rx="2" fill="${TEAL}"/>`;
+    if(Math.abs(diff)>=0.001){
+      const lx=Math.max(x0,x1)+10;
+      s+=`<text x="${lx.toFixed(1)}" y="${y+4}" font-size="10" fill="${lc}">${diff>0?'+':''}${diff.toFixed(3)}</text>`;
+    }
+  });
+  s+='</svg>';
+  document.getElementById('jfi_chart').innerHTML=s;
+}
+buildJFI();
+</script>

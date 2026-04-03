@@ -1,29 +1,92 @@
 #!/bin/bash
 START_TIME=$SECONDS
+export PATH=/c/ns-3/build/lib:/c/msys64/mingw64/bin:$PATH
+EXE=./build/scratch/ns3-dev-uhr-mld-mixed-pedca-default.exe
 
 # Configuration: Accept arguments from command line or use defaults
 PEDCA=${1:-5}
 EDCA=${2:-5}
-SIMTIME=30.0
+TOTAL_STAS=$((PEDCA + EDCA))
+SIMTIME=10.0
 SIMTIME_TAG=$(printf "%s" "$SIMTIME" | sed 's/\.0$//; s/\./p/g')
 BASE_DIR="results/pedca_${PEDCA}_edca_${EDCA}_sim_${SIMTIME_TAG}s"
+ENABLE_UL=true
+ENABLE_DL=false
+VO_ONLY_TRAFFIC=false
+MAX_BYTES_PER_FLOW=0
+APP_START=5.0
+APP_START_SPREAD=2.0
+MEAN_PROFILE_MS=250
+PROBABILITY_TWO_FLOWS=0.15
+EHT_MCS=5
+CHANNEL_WIDTH=40
+PEDCA_SELECTION_SEED=7
+
+# P-EDCA acts on AC_VO, so this stress configuration keeps mixed AC traffic
+# but makes VO dominant and uses a slightly less forgiving PHY so both-links
+# vs one-link effects have a better chance to show up in throughput/fairness.
+case "$TOTAL_STAS" in
+    10)
+        BK_RATE_MBPS=0.1
+        BE_RATE_MBPS=0.25
+        VI_RATE_MBPS=0.5
+        VO_RATE_MBPS=7
+        ;;
+    20)
+        BK_RATE_MBPS=0.02
+        BE_RATE_MBPS=0.05
+        VI_RATE_MBPS=0.15
+        VO_RATE_MBPS=4.5
+        ;;
+    30)
+        BK_RATE_MBPS=0.02
+        BE_RATE_MBPS=0.05
+        VI_RATE_MBPS=0.1
+        VO_RATE_MBPS=4
+        ;;
+    40)
+        BK_RATE_MBPS=0.02
+        BE_RATE_MBPS=0.04
+        VI_RATE_MBPS=0.08
+        VO_RATE_MBPS=2.0
+        ;;
+    50)
+        BK_RATE_MBPS=0.01
+        BE_RATE_MBPS=0.03
+        VI_RATE_MBPS=0.06
+        VO_RATE_MBPS=1.6
+        ;;
+    *)
+        echo "Unsupported total STA count: $TOTAL_STAS"
+        echo "This script currently auto-tunes traffic rates for 10, 20, 30, 40, or 50 total clients."
+        echo "Please call it with PEDCA+EDCA equal to 10, 20, 30, 40, or 50."
+        exit 1
+        ;;
+esac
 
 echo "=========================================================="
 echo " Starting Fairness Experiment"
 echo " Configuration: $PEDCA P-EDCA STAs, $EDCA EDCA STAs, $SIMTIME sec"
+echo " Total STAs: $TOTAL_STAS"
+echo " Workload: UDP, UL=$ENABLE_UL, DL=$ENABLE_DL"
+echo " Traffic profile: VO_ONLY=$VO_ONLY_TRAFFIC, MAX_BYTES_PER_FLOW=$MAX_BYTES_PER_FLOW"
+echo " Timing/profile: APP_START=$APP_START, APP_START_SPREAD=$APP_START_SPREAD, MEAN_PROFILE_MS=$MEAN_PROFILE_MS, TWO_FLOWS=$PROBABILITY_TWO_FLOWS"
+echo " PHY stress settings: EHT_MCS=$EHT_MCS, CHANNEL_WIDTH=${CHANNEL_WIDTH}MHz"
+echo " P-EDCA selection seed: $PEDCA_SELECTION_SEED"
+echo " Offered load per AC (Mbps): BK=$BK_RATE_MBPS, BE=$BE_RATE_MBPS, VI=$VI_RATE_MBPS, VO=$VO_RATE_MBPS"
 echo "=========================================================="
 echo ""
 
 echo "----------------------------------------------------------"
 echo " Running Scenario 1: P-EDCA uses both links"
 echo "----------------------------------------------------------"
-./ns3 run "scratch/uhr-mld-mixed-pedca --numPedcaStas=$PEDCA --numEdcaStas=$EDCA --simTime=$SIMTIME --distributePedcaAcrossLinks=false --enableAnim=false"
+"$EXE" --numPedcaStas=$PEDCA --numEdcaStas=$EDCA --simTime=$SIMTIME --distributePedcaAcrossLinks=false --enableAnim=false --enableUl=$ENABLE_UL --enableDl=$ENABLE_DL --voOnlyTraffic=$VO_ONLY_TRAFFIC --maxBytesPerFlow=$MAX_BYTES_PER_FLOW --appStart=$APP_START --appStartSpread=$APP_START_SPREAD --meanProfileMs=$MEAN_PROFILE_MS --probabilityTwoFlows=$PROBABILITY_TWO_FLOWS --pedcaSelectionSeed=$PEDCA_SELECTION_SEED --ehtMcs=$EHT_MCS --channelWidth=$CHANNEL_WIDTH --bkRateMbps=$BK_RATE_MBPS --beRateMbps=$BE_RATE_MBPS --viRateMbps=$VI_RATE_MBPS --voRateMbps=$VO_RATE_MBPS
 
 echo ""
 echo "----------------------------------------------------------"
 echo " Running Scenario 2: P-EDCA restricted to 1 link (Fair)"
 echo "----------------------------------------------------------"
-./ns3 run "scratch/uhr-mld-mixed-pedca --numPedcaStas=$PEDCA --numEdcaStas=$EDCA --simTime=$SIMTIME --distributePedcaAcrossLinks=true --enableAnim=false"
+"$EXE" --numPedcaStas=$PEDCA --numEdcaStas=$EDCA --simTime=$SIMTIME --distributePedcaAcrossLinks=true --enableAnim=false --enableUl=$ENABLE_UL --enableDl=$ENABLE_DL --voOnlyTraffic=$VO_ONLY_TRAFFIC --maxBytesPerFlow=$MAX_BYTES_PER_FLOW --appStart=$APP_START --appStartSpread=$APP_START_SPREAD --meanProfileMs=$MEAN_PROFILE_MS --probabilityTwoFlows=$PROBABILITY_TWO_FLOWS --pedcaSelectionSeed=$PEDCA_SELECTION_SEED --ehtMcs=$EHT_MCS --channelWidth=$CHANNEL_WIDTH --bkRateMbps=$BK_RATE_MBPS --beRateMbps=$BE_RATE_MBPS --viRateMbps=$VI_RATE_MBPS --voRateMbps=$VO_RATE_MBPS
 
 echo ""
 echo "=========================================================="
@@ -55,7 +118,14 @@ Fairness Experiment Comparison Summary
 Configuration:
   P-EDCA STAs: $PEDCA
   EDCA STAs: $EDCA
+  Total STAs: $TOTAL_STAS
   Simulation time: $SIMTIME sec
+  Traffic mode: UDP uplink-only, mixed AC with VO-dominant stress
+  PHY stress settings: EHT_MCS=$EHT_MCS CHANNEL_WIDTH=${CHANNEL_WIDTH}MHz
+  P-EDCA selection seed: $PEDCA_SELECTION_SEED
+  Offered load per AC (Mbps): BK=$BK_RATE_MBPS BE=$BE_RATE_MBPS VI=$VI_RATE_MBPS VO=$VO_RATE_MBPS
+  App start / spread (s): $APP_START / $APP_START_SPREAD
+  Dynamic profile: mean=${MEAN_PROFILE_MS}ms, two-flow probability=${PROBABILITY_TWO_FLOWS}
   Results folder: $BASE_DIR
 
 Scenario 1: P-EDCA uses both links

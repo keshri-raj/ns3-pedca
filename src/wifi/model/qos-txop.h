@@ -608,6 +608,7 @@ class QosTxop : public Txop
                                               //!< time
     bool m_enableUhrPedca{true}; //!< enable UHR VO P-EDCA behavior
     bool m_distributePedcaAcrossLinks{false}; //!< split P-EDCA attempts across links by STA
+    uint8_t m_preferredPedcaLinkId{0}; //!< preferred link for one-link P-EDCA operation
     uint32_t m_qsrcThreshold{2}; //!< retry threshold for entering P-EDCA
     uint32_t m_psrcThreshold{2}; //!< P-EDCA retry threshold before reset
     bool m_randomTxopLimitEnabled{false}; //!< randomize TXOP limit on each contention win
