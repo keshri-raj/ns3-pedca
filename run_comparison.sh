@@ -43,6 +43,7 @@ case "$TOTAL_STAS" in
         BE_RATE_MBPS=0.05
         VI_RATE_MBPS=0.1
         VO_RATE_MBPS=4
+        CHANNEL_WIDTH=20
         ;;
     40)
         BK_RATE_MBPS=0.02

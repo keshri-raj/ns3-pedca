@@ -1,0 +1,4 @@
+"total_stas","cases","case_count","dist0_successes_per_selection","dist0_failures_per_selection","dist0_resets_per_selection","dist1_successes_per_selection","dist1_failures_per_selection","dist1_resets_per_selection"
+"10","pedca_1_edca_9_sim_10s;pedca_3_edca_7_sim_10s;pedca_5_edca_5_sim_10s","3","0.633333","2.783333","0.366667","0.513131","2.419192","0.216162"
+"20","pedca_10_edca_10_sim_10s_saturated;pedca_2_edca_18_sim_10s;pedca_6_edca_14_sim_10s","3","0.634183","4.045886","0.365817","0.456238","3.06828","0.118926"
+"30","pedca_15_edca_15_sim_10s;pedca_3_edca_27_sim_10s;pedca_9_edca_21_sim_10s","3","0.404396","3.952962","0.539485","0.304986","2.851609","0.154823"
