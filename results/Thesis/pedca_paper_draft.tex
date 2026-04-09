@@ -1,0 +1,143 @@
+\documentclass[conference]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{url}
+
+\begin{document}
+
+\title{Adaptive P-EDCA Link Contention in Multi-Link STA MLDs: A Throughput, Delay, and Efficiency Study}
+
+\author{\IEEEauthorblockN{Author Name}
+\IEEEauthorblockA{Department / University\\
+Email: author@example.com}}
+
+\maketitle
+
+\begin{abstract}
+This paper investigates the impact of enabling P-EDCA contention on one link versus both links in a multi-link STA MLD environment. Two policies are compared: a both-links configuration, in which P-EDCA may contend across both available links, and a single-link configuration, in which P-EDCA is restricted to one balanced link. The evaluation is conducted using mixed access-category UDP uplink traffic in a WLAN scenario with one AP and varying numbers of STAs. The traffic model is VO-dominant and includes controlled burstiness to emulate realistic load variation. Results show that single-link P-EDCA consistently reduces normalized P-EDCA failure and reset behavior, indicating improved internal contention efficiency. However, the effect on throughput, latency, and fairness is workload-dependent. In mild and moderately contended scenarios, single-link P-EDCA often improves P-EDCA efficiency and can reduce latency tails. In heavier contention regimes, both-links P-EDCA can yield stronger raw P-EDCA throughput. The results indicate that P-EDCA link enablement should be selected adaptively rather than using a fixed policy.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Multi-link WLAN, P-EDCA, EDCA, contention, fairness, latency, throughput, multi-link STA MLD
+\end{IEEEkeywords}
+
+\section{Introduction}
+Multi-link operation introduces new scheduling choices for wireless medium access control, especially for priority-based traffic. In a multi-link STA MLD, P-EDCA can be configured to contend across both links or restricted to a single balanced link. While multi-link contention may increase transmission opportunities, it may also amplify contention overhead, failures, and internal inefficiency under certain traffic conditions. This raises an important question: does enabling P-EDCA across multiple links always improve system behavior, or is its effect dependent on the contention regime?
+
+This paper studies the behavior of a multi-link STA MLD before and after enabling multi-link P-EDCA contention. The key comparison is between a both-links policy and a single-link policy. The analysis focuses on throughput, latency, fairness, and the internal behavior of the P-EDCA mechanism itself. In addition to end-to-end metrics, the study also examines normalized P-EDCA failure and reset behavior to assess whether the contention process is efficient or wasteful.
+
+Unlike studies that focus only on aggregate throughput, this work treats P-EDCA failure and reset behavior as important indicators of mechanism health. These metrics help distinguish a configuration that is merely aggressive from one that is truly efficient. The results show that link selection is not universally optimal in one direction. Instead, the best choice depends on the level of contention, the ratio of P-EDCA to EDCA stations, and the overall stress in the network.
+
+\section{Experimental Setup}
+The simulated topology consists of one AP placed at the center of a circular STA arrangement. STAs are placed uniformly around the AP at a fixed radius, so all stations experience similar propagation conditions. The network uses multi-link operation with two links per STA MLD. The PHY configuration uses EHT MCS 5, and the main experiments are conducted with 40 MHz channel width per link, with additional 20 MHz reruns used for stress testing in selected 30-STA cases.
+
+The traffic model is UDP and uplink-only. Thus, the dominant direction of traffic is from STAs to the AP. The traffic profile is mixed across access categories, with VO given the highest emphasis. The dynamic traffic profile uses a strong VO bias to emulate bursty priority traffic. Randomization is used to introduce realistic temporal variation and burstiness rather than a perfectly steady offered load. The application start time is staggered, and the traffic profile changes over time with a mean duration of 250 ms and a 0.15 probability of activating two flows simultaneously.
+
+The evaluated client mixes include nine representative P-EDCA/EDCA configurations: 1:9, 3:7, 5:5, 2:18, 6:14, 10:10, 3:27, 9:21, and 15:15. These configurations span mild, moderate, and more intense contention regimes. The two policies under comparison are defined as follows. In Dist0, P-EDCA may contend on both links. In Dist1, P-EDCA is restricted to one balanced link. The main goal is to determine whether one-link P-EDCA improves the system under certain conditions and whether an adaptive policy is more appropriate than a fixed one.
+
+The simulation duration is 10 seconds. The P-EDCA mechanism uses thresholds of 2 and 2 for the relevant contention parameters. The study records throughput, delay percentiles, Jain's Fairness Index, and P-EDCA internal counters, including selections, successes, failures, and resets.
+
+\section{Results and Discussion}
+
+\subsection{Latency Performance}
+The latency results are summarized in Table~\ref{tab:latency}. The key observation is that the single-link policy does not produce a uniform latency outcome across all configurations. In several cases, such as 3:7, 5:5, and 15:15, the single-link policy significantly reduces delay tails, especially at the p95 and p99 levels. In 9:21 and 10:10, the effect is mixed, with one percentile improving and the other showing a smaller gain or no gain. In the lighter configurations 1:9, 2:18, 3:27, and 6:14, the difference between the two policies is smaller.
+
+This indicates that latency behavior is highly workload-dependent. In stressed regimes, single-link P-EDCA can reduce queueing and contention overhead, which is reflected in lower delay tails. However, the benefit is not universal, and the latency outcome depends on the station mix and offered load.
+
+\begin{table}[t]
+\caption{Latency Comparison Across Client Configurations}
+\label{tab:latency}
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Configuration & D0 p95 & D1 p95 & D0 p99 & D1 p99 \\
+\midrule
+1:9   & 418 & 418 & 479 & 479 \\
+2:18  & 496 & 495 & 602 & 604 \\
+3:7   & 419 & 87  & 481 & 130 \\
+3:27  & 118 & 120 & 177 & 187 \\
+5:5   & 448 & 87  & 496 & 130 \\
+6:14  & 491 & 498 & 581 & 586 \\
+9:21  & 559 & 569 & 811 & 690 \\
+10:10 & 499 & 486 & 596 & 563 \\
+15:15 & 577 & 529 & 712 & 654 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Normalized P-EDCA Failure Behavior}
+The normalized failure results are summarized in Table~\ref{tab:failures}. This is the clearest and most consistent trend in the study. Across all evaluated configurations, the single-link policy reduces normalized P-EDCA failures per selection. This means that when P-EDCA is selected, the single-link configuration produces fewer failure events on average. This is a strong indication that the contention procedure is more efficient and less wasteful.
+
+The reduction in normalized failures is important because raw failure counts alone can be misleading. A configuration may have more attempts simply because it is invoked more often. Normalizing by P-EDCA selections provides a better measure of efficiency. In this metric, single-link P-EDCA is the clear winner across all tested scenarios.
+
+\begin{table}[t]
+\caption{Normalized P-EDCA Failure Behavior}
+\label{tab:failures}
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Configuration & D0 failures/sel & D1 failures/sel \\
+\midrule
+1:9   & 4.100 & 4.100 \\
+2:18  & 6.333 & 4.815 \\
+3:7   & 2.500 & 2.067 \\
+3:27  & 5.891 & 5.143 \\
+5:5   & 1.750 & 1.091 \\
+6:14  & 3.480 & 2.412 \\
+9:21  & 3.395 & 2.120 \\
+10:10 & 2.324 & 1.978 \\
+15:15 & 2.573 & 1.292 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Normalized P-EDCA Reset Behavior}
+The normalized reset results are summarized in Table~\ref{tab:resets}. As with failures, single-link P-EDCA consistently reduces resets per selection. This indicates that the mechanism is less likely to repeatedly exhaust its contention process and restart. In practice, this means the single-link policy is more stable at the internal P-EDCA level.
+
+The reset reduction is one of the strongest findings in the study. It suggests that one-link P-EDCA is a better choice when the design goal is to reduce internal contention overhead and maintain cleaner contention behavior. This effect is visible across both mild and more stressed configurations.
+
+\begin{table}[t]
+\caption{Normalized P-EDCA Reset Behavior}
+\label{tab:resets}
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Configuration & D0 resets/sel & D1 resets/sel \\
+\midrule
+1:9   & 0.200 & 0.200 \\
+2:18  & 0.143 & 0.000 \\
+3:7   & 0.400 & 0.267 \\
+3:27  & 0.291 & 0.089 \\
+5:5   & 0.500 & 0.182 \\
+6:14  & 0.360 & 0.118 \\
+9:21  & 0.630 & 0.200 \\
+10:10 & 0.595 & 0.239 \\
+15:15 & 0.698 & 0.175 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Throughput and Fairness Observations}
+Throughput and fairness are more mixed than the failure and reset metrics. In some cases, single-link P-EDCA improves P-EDCA VO throughput and may slightly improve fairness. In other cases, both-links P-EDCA delivers stronger raw P-EDCA throughput, especially when the P-EDCA share is high or the scenario is more demanding. Jain's Fairness Index also does not move in one fixed direction. Some cases show improved fairness under single-link operation, while others show a noticeable decrease.
+
+This behavior supports the idea that single-link P-EDCA is not a universal throughput winner. Rather, it is a mechanism-efficiency winner. Whether that efficiency translates into better throughput depends on the load regime. In mild and moderately contended settings, single-link P-EDCA can be a good choice because it reduces contention overhead without harming performance too much. In more intense regimes, both-links P-EDCA can recover more raw throughput.
+
+\subsection{Regime Interpretation}
+The results suggest a practical way to interpret the network operating regime. Mild contention is characterized by high fairness, low delay tails, and limited sensitivity to the link-selection policy. Moderate contention is characterized by visible delay growth, measurable contention effects, and stronger sensitivity to the policy choice. Intense or saturated contention is characterized by low fairness, larger delay tails, and stronger dependence on raw throughput recovery.
+
+From this perspective, single-link P-EDCA is best suited for mild and moderate contention regimes, where the goal is to improve efficiency and reduce internal failures and resets. Both-links P-EDCA becomes more attractive in intense regimes, where maximizing throughput may be more important than minimizing contention overhead. This supports the conclusion that link enablement should be adaptive rather than fixed.
+
+\section{Conclusion}
+This paper investigated the behavior of P-EDCA in a multi-link STA MLD environment before and after enabling contention across multiple links. The main finding is that single-link P-EDCA consistently improves internal efficiency by reducing normalized failures and resets. This is the most stable and defensible result across all evaluated configurations.
+
+At the same time, throughput, latency, and fairness exhibit mixed behavior. In some cases, single-link P-EDCA improves delay tails and preserves or improves throughput. In other cases, both-links P-EDCA delivers stronger raw P-EDCA throughput. These results indicate that no single policy is optimal for all operating conditions.
+
+The overall conclusion is that P-EDCA link selection should be adaptive. In mild and moderately contended environments, single-link P-EDCA is often preferable because it reduces contention overhead and improves internal efficiency. In more intense or saturated environments, both-links P-EDCA may be needed to maximize throughput. Future work should therefore focus on dynamic link-selection algorithms that adapt to measured contention, client distribution, and traffic load.
+
+\end{document}
